@@ -768,16 +768,25 @@ function ensureCourseExists(userId, courseId) {
 
   // Parse courseId to check for existing course with same parameters
   const parts = courseId.split('-');
-  const subjectId = parts[0];
-  const optionType = parts[1];
-
+  const firstPart = parts[0];
+  let subjectId;
   let grade = null;
   let goal = null;
 
-  if (optionType === 'grade') {
-    grade = parts[2];
-  } else if (optionType === 'goal') {
-    goal = parts.slice(2).join('-'); // e.g. "travel", "communication", "study"
+  // Handle exam courses (ege-russian, oge-math, etc.)
+  if (firstPart === 'ege' || firstPart === 'oge') {
+    subjectId = parts[1]; // e.g. "russian", "math"
+    goal = firstPart; // e.g. "ege" or "oge"
+  } else {
+    // Regular courses (russian-grade-5, english-goal-travel, etc.)
+    subjectId = parts[0];
+    const optionType = parts[1];
+
+    if (optionType === 'grade') {
+      grade = parts[2];
+    } else if (optionType === 'goal') {
+      goal = parts.slice(2).join('-'); // e.g. "travel", "communication", "study"
+    }
   }
 
   // Check if course with same subject, grade/goal already exists for this user
