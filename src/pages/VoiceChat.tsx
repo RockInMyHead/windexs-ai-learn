@@ -352,7 +352,7 @@ const VoiceChat = () => {
       // Поэтому с фронта отправляем ТОЛЬКО чистую реплику пользователя.
 
       // Send raw user message to server API
-      const response = await fetch('http://localhost:3001/api/chat/russian-grade-5/message', {
+      const response = await fetch(`http://localhost:3001/api/chat/${courseId}/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
