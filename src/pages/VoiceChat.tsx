@@ -463,7 +463,7 @@ const VoiceChat = () => {
         },
         body: JSON.stringify({
           text: text,
-          voice: 'nova' // Female voice suitable for teacher
+          voice: 'shimmer' // Bright and energetic female voice
         })
       });
 

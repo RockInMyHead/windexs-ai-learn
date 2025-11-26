@@ -1163,7 +1163,7 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     console.log('🔊 === ПОСТУПИЛ ЗАПРОС НА /api/tts ===');
     console.log('TTS request received at', new Date().toISOString());
 
-    const { text, voice = 'nova' } = req.body;
+    const { text, voice = 'shimmer' } = req.body;
 
     if (!text || !text.trim()) {
       console.error('❌ No text provided');
