@@ -45,8 +45,6 @@ const VoiceChat = () => {
   const { token } = useAuth();
   const { toast } = useToast();
 
-  console.log('🎯 VoiceChat инициализирован с courseId:', courseId);
-
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGeneratingResponse, setIsGeneratingResponse] = useState(false);
