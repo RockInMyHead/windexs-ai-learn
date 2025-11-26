@@ -101,7 +101,7 @@ const VoiceChat = () => {
 
     // Configure recognition
     recognition.continuous = true; // Keep listening continuously
-    recognition.interimResults = false; // Only final results
+    recognition.interimResults = true; // Enable interim results to detect speech early
     recognition.lang = 'ru-RU'; // Russian language
     recognition.maxAlternatives = 1;
 
@@ -120,13 +120,20 @@ const VoiceChat = () => {
       }
 
       const result = event.results[event.results.length - 1]; // Get the last result
+
+      // IMMEDIATELY stop TTS when user starts speaking (interim results)
+      if (!result.isFinal && isSpeaking) {
+        console.log('🛑 Пользователь начал говорить, НЕМЕДЛЕННО останавливаю TTS...');
+        stopCurrentTTS();
+      }
+
       if (result.isFinal) {
         const transcript = result[0].transcript.trim();
         console.log('👤 Распознанный текст:', transcript);
         console.log('🎯 Текст для вывода:', transcript);
 
         if (transcript) {
-          // Interrupt current TTS if playing
+          // Double-check TTS is stopped
           if (isSpeaking) {
             console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
             stopCurrentTTS();
