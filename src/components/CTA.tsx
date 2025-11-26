@@ -15,11 +15,6 @@ const CTA = () => {
           <div className="absolute inset-0 bg-[linear-gradient(to_right,hsl(var(--primary)/0.1)_1px,transparent_1px),linear-gradient(to_bottom,hsl(var(--primary)/0.1)_1px,transparent_1px)] bg-[size:2rem_2rem] opacity-30" />
           
           <div className="relative z-10">
-            <div className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-primary/20 to-accent/20 rounded-full border border-primary/30 mb-8 animate-glow-pulse">
-              <Sparkles className="w-5 h-5 text-primary" />
-              <span className="text-sm font-bold text-primary">Первый месяц бесплатно</span>
-            </div>
-            
             <h2 className="text-4xl md:text-6xl font-bold mb-6 leading-tight">
               Готовы начать обучение <br />
               <span className="bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
@@ -38,7 +33,7 @@ const CTA = () => {
                 className="group relative overflow-hidden bg-gradient-to-r from-primary to-accent hover:shadow-2xl hover:shadow-primary/60 transition-all duration-300 text-white border-0 px-10 py-7 text-lg font-semibold"
               >
                 <span className="relative z-10 flex items-center">
-                  Начать бесплатно
+                  Начать обучение
                   <ArrowRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
                 </span>
                 <div className="absolute inset-0 bg-gradient-to-r from-accent to-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
