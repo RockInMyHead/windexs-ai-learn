@@ -699,12 +699,36 @@ function ensureCourseExists(userId, courseId) {
     return courseId;
   }
 
+  // Parse courseId to check for existing course with same parameters
+  const parts = courseId.split('-');
+  const subjectId = parts[0];
+  const optionType = parts[1];
+
+  let grade = null;
+  let goal = null;
+
+  if (optionType === 'grade') {
+    grade = parts[2];
+  } else if (optionType === 'goal') {
+    goal = optionType;
+  }
+
+  // Check if course with same subject, grade/goal already exists for this user
+  const existingCourse = db.prepare(`
+    SELECT id FROM user_courses
+    WHERE user_id = ? AND subject_id = ? AND (grade = ? OR grade IS NULL) AND (goal = ? OR goal IS NULL)
+  `).get(userId, subjectId, grade, goal);
+
+  if (existingCourse) {
+    return existingCourse.id;
+  }
+
   // Use user-specific course id to avoid collisions across users
   const userCourseId = `${courseId}-${userId}`;
 
   // If we already created user-specific course earlier, reuse it
-  const existingCourse = db.prepare('SELECT id FROM user_courses WHERE id = ? AND user_id = ?').get(userCourseId, userId);
-  if (existingCourse) {
+  const userSpecificCourse = db.prepare('SELECT id FROM user_courses WHERE id = ? AND user_id = ?').get(userCourseId, userId);
+  if (userSpecificCourse) {
     return userCourseId;
   }
 
