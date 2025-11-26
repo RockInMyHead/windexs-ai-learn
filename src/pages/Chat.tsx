@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { MessageSquare, Send, Sparkles } from "lucide-react";
+import { Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -28,19 +28,6 @@ const Chat = () => {
       <Navigation />
       <main className="container mx-auto px-4 pt-24 pb-16">
         <div className="max-w-4xl mx-auto h-[calc(100vh-12rem)] flex flex-col">
-          <div className="text-center mb-6 animate-fade-in">
-            <div className="flex items-center justify-center gap-2 mb-2">
-              <MessageSquare className="w-10 h-10 text-primary" />
-              <Sparkles className="w-6 h-6 text-yellow-500" />
-            </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              AI Чат-помощник
-            </h1>
-            <p className="text-muted-foreground">
-              Задавайте вопросы и получайте персонализированные ответы
-            </p>
-          </div>
-
           <Card className="flex-1 flex flex-col overflow-hidden">
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
               {messages.map((message, index) => (

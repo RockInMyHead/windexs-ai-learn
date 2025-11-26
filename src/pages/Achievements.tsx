@@ -4,41 +4,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress";
 
 const Achievements = () => {
-  const achievements = [
-    {
-      title: "Первые шаги",
-      description: "Завершите первый урок",
-      icon: Star,
-      unlocked: true,
-      date: "15 ноября 2024",
-    },
-    {
-      title: "Неделя подряд",
-      description: "7 дней занятий без пропусков",
-      icon: Zap,
-      unlocked: true,
-      date: "20 ноября 2024",
-    },
-    {
-      title: "Мастер курса",
-      description: "Завершите полный курс",
-      icon: Award,
-      unlocked: false,
-      progress: 65,
-    },
-    {
-      title: "Целеустремленный",
-      description: "Достигните 3 целей подряд",
-      icon: Target,
-      unlocked: false,
-      progress: 33,
-    },
-  ];
-
+  // Пока убираем mock данные - новые пользователи будут видеть пустое состояние
+  const achievements = [];
   const stats = [
-    { label: "Всего достижений", value: "2/12", icon: Trophy },
-    { label: "Дней подряд", value: "7", icon: Zap },
-    { label: "Баллов заработано", value: "1,234", icon: Star },
+    { label: "Всего достижений", value: "0/12", icon: Trophy },
+    { label: "Дней подряд", value: "0", icon: Zap },
+    { label: "Баллов заработано", value: "0", icon: Star },
   ];
 
   return (
@@ -81,68 +52,85 @@ const Achievements = () => {
             })}
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6">
-            {achievements.map((achievement, index) => {
-              const Icon = achievement.icon;
-              return (
-                <Card
-                  key={index}
-                  className={`animate-fade-in ${
-                    achievement.unlocked
-                      ? "border-primary shadow-lg shadow-primary/20"
-                      : "opacity-60"
-                  }`}
-                  style={{ animationDelay: `${index * 100}ms` }}
-                >
-                  <CardHeader>
-                    <div className="flex items-start gap-4">
-                      <div
-                        className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                          achievement.unlocked
-                            ? "bg-gradient-to-br from-yellow-400 to-orange-500"
-                            : "bg-muted"
-                        }`}
-                      >
-                        <Icon
-                          className={`w-6 h-6 ${
-                            achievement.unlocked ? "text-white" : "text-muted-foreground"
+          {achievements.length > 0 ? (
+            <div className="grid md:grid-cols-2 gap-6">
+              {achievements.map((achievement, index) => {
+                const Icon = achievement.icon;
+                return (
+                  <Card
+                    key={index}
+                    className={`animate-fade-in ${
+                      achievement.unlocked
+                        ? "border-primary shadow-lg shadow-primary/20"
+                        : "opacity-60"
+                    }`}
+                    style={{ animationDelay: `${index * 100}ms` }}
+                  >
+                    <CardHeader>
+                      <div className="flex items-start gap-4">
+                        <div
+                          className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                            achievement.unlocked
+                              ? "bg-gradient-to-br from-yellow-400 to-orange-500"
+                              : "bg-muted"
                           }`}
-                        />
-                      </div>
-                      <div className="flex-1">
-                        <CardTitle className="text-xl mb-1">
-                          {achievement.title}
-                        </CardTitle>
-                        <CardDescription>
-                          {achievement.description}
-                        </CardDescription>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {achievement.unlocked ? (
-                      <div className="flex items-center gap-2 text-sm text-primary">
-                        <Award className="w-4 h-4" />
-                        Получено: {achievement.date}
-                      </div>
-                    ) : achievement.progress ? (
-                      <div>
-                        <div className="flex justify-between text-sm mb-2">
-                          <span>Прогресс</span>
-                          <span className="font-semibold">{achievement.progress}%</span>
+                        >
+                          <Icon
+                            className={`w-6 h-6 ${
+                              achievement.unlocked ? "text-white" : "text-muted-foreground"
+                            }`}
+                          />
                         </div>
-                        <Progress value={achievement.progress} />
+                        <div className="flex-1">
+                          <CardTitle className="text-xl mb-1">
+                            {achievement.title}
+                          </CardTitle>
+                          <CardDescription>
+                            {achievement.description}
+                          </CardDescription>
+                        </div>
                       </div>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">
-                        Заблокировано
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+                    </CardHeader>
+                    <CardContent>
+                      {achievement.unlocked ? (
+                        <div className="flex items-center gap-2 text-sm text-primary">
+                          <Award className="w-4 h-4" />
+                          Получено: {achievement.date}
+                        </div>
+                      ) : achievement.progress ? (
+                        <div>
+                          <div className="flex justify-between text-sm mb-2">
+                            <span>Прогресс</span>
+                            <span className="font-semibold">{achievement.progress}%</span>
+                          </div>
+                          <Progress value={achievement.progress} />
+                        </div>
+                      ) : (
+                        <div className="text-sm text-muted-foreground">
+                          Заблокировано
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-16">
+              <div className="max-w-md mx-auto">
+                <div className="w-24 h-24 bg-yellow-500/10 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Trophy className="w-12 h-12 text-yellow-500" />
+                </div>
+                <h3 className="text-2xl font-semibold mb-4">У вас пока нет достижений</h3>
+                <p className="text-muted-foreground mb-8">
+                  Начните обучение, чтобы получать награды за успехи и достижения
+                </p>
+                <div className="text-sm text-muted-foreground">
+                  Первые достижения появятся после прохождения уроков
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
     </div>

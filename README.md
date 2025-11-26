@@ -1,73 +1,113 @@
-# Welcome to your Lovable project
+# Windexs AI Learn - Интеллектуальная платформа обучения
 
-## Project info
+## 🚀 Запуск проекта
 
-**URL**: https://lovable.dev/projects/26d75dc4-b043-4ef3-bda7-eb860f3caa5b
-
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/26d75dc4-b043-4ef3-bda7-eb860f3caa5b) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+### Сервер
+```bash
+cd server
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+### Клиент
+```bash
+npm install
+npm run dev
+```
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## 🤖 AI Чат система
 
-**Use GitHub Codespaces**
+### Особенности
+- **Персонализированный AI-преподаватель** с учетом профиля ученика
+- **Streaming ответы** в реальном времени
+- **Контекст из 30 сообщений** для непрерывного диалога
+- **Адаптивная температура**: 0.3 для уроков, 0.7 для языковых курсов
+- **Система домашних заданий** с автоматической проверкой
+- **Аналитика обучения** и прогресс-трекинг
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### Настройка OpenAI API
+1. Получите API ключ на https://platform.openai.com/api-keys
+2. Создайте файл `server/.env`:
+```
+OPENAI_API_KEY=sk-your-api-key-here
+```
+3. Перезапустите сервер
 
-## What technologies are used for this project?
+### API Endpoints
 
-This project is built with:
+#### Чат
+- `GET /api/chat/:courseId/history` - история сообщений
+- `POST /api/chat/:courseId/message` - отправка сообщения с streaming
+- `DELETE /api/chat/:courseId/history` - очистка истории
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+#### Домашние задания
+- `GET /api/homework/:courseId` - получение заданий
+- `POST /api/homework/:courseId` - создание задания
+- `PUT /api/homework/:homeworkId` - обновление статуса
 
-## How can I deploy this project?
+#### Профиль пользователя
+- `GET /api/profile` - получение профиля
+- `PUT /api/profile` - обновление настроек
 
-Simply open [Lovable](https://lovable.dev/projects/26d75dc4-b043-4ef3-bda7-eb860f3caa5b) and click on Share -> Publish.
+## 🔐 Аутентификация
+- JWT-based аутентификация
+- Защищенные маршруты для авторизованных пользователей
+- SQLite база данных для хранения пользователей и сессий
 
-## Can I connect a custom domain to my Lovable project?
+## 📊 База данных
+Автоматически создаются таблицы:
+- `users` - пользователи
+- `sessions` - сессии
+- `user_courses` - курсы пользователей
+- `chat_messages` - история чата
+- `homework` - домашние задания
+- `user_profiles` - профили пользователей
+- `learning_analytics` - аналитика обучения
 
-Yes, you can!
+## 🎯 Функциональность
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+### Для учеников:
+- 📚 Выбор курсов по предметам и классам
+- 💬 Интерактивный AI-чат с преподавателем
+- 📝 Домашние задания с проверкой
+- 📊 Отслеживание прогресса
+- 🎤 Голосовые сообщения
+- 📎 Прикрепление файлов
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+### Для преподавателей:
+- 🤖 Интеллектуальная система обучения
+- 📈 Аналитика успеваемости
+- ✅ Автоматическая проверка заданий
+- 📋 Персонализация обучения
+
+## 🛠️ Технологии
+- **Frontend**: React, TypeScript, Tailwind CSS, ShadCN UI
+- **Backend**: Node.js, Express, SQLite
+- **AI**: OpenAI GPT-4o-mini с streaming
+- **Authentication**: JWT
+- **Database**: better-sqlite3
+
+## 📝 Использование
+
+1. **Регистрация/Вход** в систему
+2. **Выбор курса** на странице "Курсы"
+3. **Начало урока** - курс автоматически добавляется в библиотеку
+4. **Чат с AI** - задавайте вопросы, получайте персонализированные ответы
+5. **Домашние задания** - просматривайте и выполняйте задания
+6. **Прогресс** - отслеживайте достижения
+
+## 🔧 Разработка
+
+### Добавление нового предмета:
+1. Обновите `subjectNamesRu` в `server/index.js`
+2. Добавьте уроки в функцию `getNextLesson`
+3. Обновите иконки в `src/lib/subjects.ts`
+
+### Кастомизация AI:
+- Измените системный промпт в `generateSystemPrompt`
+- Настройте температуру для разных типов курсов
+- Добавьте новые параметры персонализации
+
+---
+
+**Приятного обучения! 🎓✨**

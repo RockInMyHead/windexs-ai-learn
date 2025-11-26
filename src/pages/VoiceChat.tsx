@@ -1,19 +1,494 @@
 import Navigation from "@/components/Navigation";
-import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { getCourseDisplayName } from "@/lib/utils";
+import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useParams } from "react-router-dom";
-import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+
+// Web Speech API types
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+  message?: string;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onstart: ((event: Event) => void) | null;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: ((event: Event) => void) | null;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognition;
+    webkitSpeechRecognition?: new () => SpeechRecognition;
+  }
+}
 
 const VoiceChat = () => {
   const { courseId } = useParams();
-  const [isConnected, setIsConnected] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  const { token } = useAuth();
+  const { toast } = useToast();
 
-  const handleConnect = () => {
-    setIsConnected(!isConnected);
-  };
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isGeneratingResponse, setIsGeneratingResponse] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isMicEnabled, setIsMicEnabled] = useState(true);
+  const [isSoundEnabled, setIsSoundEnabled] = useState(true);
+  const [userProfile, setUserProfile] = useState<any>(null);
+
+  const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
+
+  // Initialize Web Speech API
+  const initializeSpeechRecognition = useCallback(() => {
+    // Check if Web Speech API is supported
+    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      console.error('❌ Web Speech API не поддерживается в этом браузере');
+      return null;
+    }
+
+    console.log('🎤 Инициализация Web Speech API...');
+    const recognition = new SpeechRecognition();
+
+    // Configure recognition
+    recognition.continuous = true; // Keep listening continuously
+    recognition.interimResults = false; // Only final results
+    recognition.lang = 'ru-RU'; // Russian language
+    recognition.maxAlternatives = 1;
+
+    // Event handlers
+    recognition.onstart = () => {
+      console.log('🎙️ Speech recognition started');
+      console.log('🎙️ Recognition состояние: started');
+      setIsTranscribing(true);
+    };
+
+    recognition.onresult = async (event) => {
+      // Don't process if mic is disabled
+      if (!isMicEnabled) {
+        console.log('🎤 Микрофон отключен, игнорируем результат');
+        return;
+      }
+
+      const result = event.results[event.results.length - 1]; // Get the last result
+      if (result.isFinal) {
+        const transcript = result[0].transcript.trim();
+        console.log('👤 Распознанный текст:', transcript);
+        console.log('🎯 Текст для вывода:', transcript);
+
+        if (transcript) {
+          // Send to LLM and get response
+          const llmResponse = await sendToLLM(transcript);
+
+          // Speak the response (recognition continues automatically in continuous mode)
+          await speakText(llmResponse);
+
+          console.log('✅ Ответ озвучен, продолжаем прослушивание...');
+        }
+      }
+    };
+
+    recognition.onerror = (event) => {
+      console.error('❌ Speech recognition error:', event.error);
+      setIsTranscribing(false);
+    };
+
+    recognition.onend = () => {
+      console.log('🎙️ Speech recognition ended');
+      setIsTranscribing(false);
+
+      // In continuous mode, onend usually means an error occurred
+      // Try to restart if we're still recording
+      if (isRecording) {
+        console.log('🔄 Перезапуск после неожиданной остановки...');
+        setTimeout(() => {
+          startSpeechRecognition();
+        }, 1000); // Longer delay for error recovery
+      }
+    };
+
+    speechRecognitionRef.current = recognition;
+    console.log('✅ Web Speech API инициализирован');
+    return recognition;
+  }, [isRecording, isMicEnabled, isSoundEnabled]);
+
+  // Start speech recognition
+  const startSpeechRecognition = useCallback(() => {
+    if (!speechRecognitionRef.current) {
+      console.log('❌ Speech recognition не инициализирован');
+      return;
+    }
+
+    console.log('🎙️ Попытка запуска распознавания речи...', {
+      isRecording,
+      isTranscribing,
+      recognitionState: speechRecognitionRef.current ? 'exists' : 'null'
+    });
+
+    try {
+      // Ensure recognition is stopped before starting
+      try {
+        speechRecognitionRef.current.stop();
+        console.log('🛑 Recognition остановлен перед перезапуском');
+      } catch (e) {
+        // Ignore if already stopped
+        console.log('🛑 Recognition уже остановлен');
+      }
+
+      console.log('🎙️ Запуск распознавания речи...');
+      speechRecognitionRef.current.start();
+      console.log('✅ start() вызван успешно');
+    } catch (error) {
+      console.error('❌ Ошибка запуска speech recognition:', error);
+      console.error('❌ Детали ошибки:', {
+        message: error.message,
+        name: error.name,
+        stack: error.stack
+      });
+      setIsTranscribing(false);
+    }
+  }, [isRecording, isTranscribing]);
+
+  // Start/stop recording
+  const handleStartStopRecording = useCallback(async () => {
+    if (isRecording) {
+      // Stop recording
+      console.log('🛑 Остановка записи...');
+      setIsRecording(false);
+      setIsTranscribing(false);
+
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (error) {
+          console.log('Speech recognition already stopped');
+        }
+      }
+    } else {
+      // Start recording (only if mic is enabled)
+      if (!isMicEnabled) {
+        toast({
+          title: "Микрофон отключен",
+          description: "Включите микрофон для начала записи",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      console.log('🎤 Запуск записи...');
+
+      try {
+        // Initialize Web Speech API if not already done
+        if (!speechRecognitionRef.current) {
+          const recognition = initializeSpeechRecognition();
+          if (!recognition) {
+            console.error('❌ Не удалось инициализировать Web Speech API');
+            return;
+          }
+        }
+
+        setIsRecording(true);
+
+        // Start speech recognition
+        startSpeechRecognition();
+
+        console.log('🎤 Запись начата');
+      } catch (error) {
+        console.error('❌ Ошибка запуска записи:', error);
+      }
+    }
+  }, [isRecording, initializeSpeechRecognition, startSpeechRecognition, isMicEnabled, toast]);
+
+  // Toggle microphone
+  const handleToggleMic = useCallback(() => {
+    if (isMicEnabled) {
+      // Disable mic
+      console.log('🎤 Отключение микрофона...');
+      setIsMicEnabled(false);
+      if (isRecording) {
+        // Stop recording if it's active
+        setIsRecording(false);
+        setIsTranscribing(false);
+        if (speechRecognitionRef.current) {
+          try {
+            speechRecognitionRef.current.stop();
+          } catch (error) {
+            console.log('Speech recognition already stopped');
+          }
+        }
+      }
+      toast({
+        title: "Микрофон отключен",
+        description: "Распознавание речи приостановлено"
+      });
+    } else {
+      // Enable mic
+      console.log('🎤 Включение микрофона...');
+      setIsMicEnabled(true);
+      toast({
+        title: "Микрофон включен",
+        description: "Распознавание речи активно"
+      });
+    }
+  }, [isMicEnabled, isRecording, toast]);
+
+  // Toggle sound
+  const handleToggleSound = useCallback(() => {
+    if (isSoundEnabled) {
+      // Disable sound
+      console.log('🔊 Отключение звука...');
+      setIsSoundEnabled(false);
+      toast({
+        title: "Звук отключен",
+        description: "Ответы не будут озвучиваться"
+      });
+    } else {
+      // Enable sound
+      console.log('🔊 Включение звука...');
+      setIsSoundEnabled(true);
+      toast({
+        title: "Звук включен",
+        description: "Ответы будут озвучиваться"
+      });
+    }
+  }, [isSoundEnabled, toast]);
+
+  // Get user profile from API
+  const getUserProfile = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:3001/api/profile', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const profile = await response.json();
+        setUserProfile(profile);
+        console.log('📋 Профиль пользователя загружен:', profile);
+        return profile;
+      }
+    } catch (error) {
+      console.error('❌ Ошибка загрузки профиля:', error);
+    }
+    return null;
+  }, [token]);
+
+  // Get course name from courseId
+  const getCourseName = useCallback(() => {
+    return getCourseDisplayName(courseId || "");
+  }, [courseId]);
+
+  // Send transcribed text to LLM with Julia's system prompt
+  const sendToLLM = useCallback(async (userMessage: string): Promise<string> => {
+    setIsGeneratingResponse(true);
+
+    try {
+      console.log('🤖 Отправка сообщения в LLM...');
+
+      // Get user profile if not loaded
+      let profile = userProfile;
+      if (!profile) {
+        profile = await getUserProfile();
+      }
+
+      // Get course information
+      const courseName = getCourseDisplayName(courseId || "");
+
+      // Build context information
+      const contextInfo = [];
+      if (courseName) {
+        contextInfo.push(`Курс: ${courseName}`);
+      }
+      if (profile) {
+        console.log('📊 Профиль пользователя для LLM:', profile);
+        if (profile.learning_style) {
+          contextInfo.push(`Стиль обучения: ${profile.learning_style}`);
+        }
+        if (profile.difficulty_level) {
+          contextInfo.push(`Уровень сложности: ${profile.difficulty_level}`);
+        }
+        if (profile.interests) {
+          // Safely handle interests - could be string, array, or object
+          let interestsStr = '';
+          if (typeof profile.interests === 'string') {
+            interestsStr = profile.interests;
+          } else if (Array.isArray(profile.interests)) {
+            interestsStr = profile.interests.join(', ');
+          } else if (profile.interests) {
+            interestsStr = JSON.stringify(profile.interests);
+          }
+          if (interestsStr) {
+            contextInfo.push(`Интересы: ${interestsStr}`);
+          }
+        }
+      }
+
+      const contextString = contextInfo.length > 0 ? `\nИнформация о пользователе:\n${contextInfo.join('\n')}` : '';
+
+      // NOTE:
+      // Раньше мы формировали здесь полный промт учителя Юлии (teacherJuliaPrompt)
+      // и отправляли его как content. Теперь ЭТО ДЕЛАЕТ СЕРВЕР:
+      //  - сервер знает курс, профиль, домашки
+      //  - сам генерирует системный промт (generateVoiceChatPrompt)
+      // Поэтому с фронта отправляем ТОЛЬКО чистую реплику пользователя.
+
+      // Send raw user message to server API
+      const response = await fetch('http://localhost:3001/api/chat/russian-grade-5/message', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          // В content отправляем только то, что сказал пользователь.
+          // Сервер построит системный промт учителя Юлии сам.
+          content: userMessage,
+          messageType: 'voice'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('❌ Ответ сервера с ошибкой:', response.status, errorData);
+        throw new Error(errorData.error || errorData.details || 'Failed to get LLM response');
+      }
+
+      const data = await response.json();
+      console.log('✅ LLM ответил:', data.message);
+
+      return data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+
+    } catch (error) {
+      console.error('❌ Ошибка LLM:', error);
+      console.error('❌ Детали ошибки:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      });
+      return 'Извини, у меня технические неполадки. Попробуй еще раз через минуту.';
+    } finally {
+      setIsGeneratingResponse(false);
+    }
+  }, [token, userProfile, courseId, getUserProfile]);
+
+  // Convert text to speech using OpenAI TTS
+  const speakText = useCallback(async (text: string) => {
+    // Don't speak if sound is disabled
+    if (!isSoundEnabled) {
+      console.log('🔇 Звук отключен, пропускаем озвучку');
+      return;
+    }
+
+    setIsSpeaking(true);
+
+    try {
+      console.log('🔊 Отправка текста в OpenAI TTS...');
+
+      const response = await fetch('http://localhost:3001/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          text: text,
+          voice: 'nova' // Female voice suitable for teacher
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.details || 'Failed to generate speech');
+      }
+
+      // Get audio blob
+      const audioBlob = await response.blob();
+      console.log('✅ Получен аудио файл, размер:', audioBlob.size);
+
+      // Create audio element and play
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      // Event handlers
+      audio.onplay = () => {
+        console.log('🔊 Озвучка начата');
+      };
+
+      audio.onended = () => {
+        console.log('🔊 Озвучка завершена');
+        setIsSpeaking(false);
+        // Clean up URL
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.onerror = (event) => {
+        console.error('❌ Ошибка воспроизведения аудио:', event);
+        setIsSpeaking(false);
+        URL.revokeObjectURL(audioUrl);
+        toast({
+          title: "Ошибка озвучки",
+          description: "Не удалось воспроизвести аудио",
+          variant: "destructive"
+        });
+      };
+
+      // Start playing
+      await audio.play();
+
+    } catch (error) {
+      console.error('❌ Ошибка TTS:', error);
+      setIsSpeaking(false);
+      toast({
+        title: "Ошибка озвучки",
+        description: `Не удалось озвучить текст: ${error.message}`,
+        variant: "destructive"
+      });
+    }
+  }, [token, toast, isSoundEnabled]);
+
+  // Load user profile on component mount
+  useEffect(() => {
+    if (token) {
+      getUserProfile();
+    }
+  }, [token, getUserProfile]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log('🧹 Очистка при размонтировании');
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (error) {
+          // Already stopped
+        }
+      }
+      // Stop speech synthesis
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -25,69 +500,111 @@ const VoiceChat = () => {
               Голосовое общение
             </h1>
             <p className="text-muted-foreground">
-              Урок: {courseId}
+              {getCourseDisplayName(courseId || "")}
             </p>
           </div>
 
           <Card className="shadow-2xl animate-fade-in">
             <CardContent className="p-8 md:p-12">
-              <div className="text-center space-y-8">
+              <div className="text-center space-y-6">
                 {/* Status Indicator */}
                 <div className="relative inline-block">
-                  <div className={`w-32 h-32 md:w-40 md:h-40 rounded-full ${isConnected ? 'bg-emerald-500/20' : 'bg-muted'} flex items-center justify-center transition-all duration-300`}>
-                    <Mic className={`w-16 h-16 md:w-20 md:h-20 ${isConnected ? 'text-emerald-500' : 'text-muted-foreground'}`} />
+                  <div className={`w-32 h-32 md:w-40 md:h-40 rounded-full ${
+                    isRecording ? 'bg-green-500/20' : 'bg-muted'
+                  } flex items-center justify-center transition-all duration-300`}>
+                    <Mic className={`w-16 h-16 md:w-20 md:h-20 ${
+                      isRecording ? 'text-green-500' : 'text-muted-foreground'
+                    }`} />
                   </div>
-                  {isConnected && (
-                    <div className="absolute inset-0 rounded-full animate-ping bg-emerald-500/20"></div>
+                  {isRecording && (
+                    <div className="absolute inset-0 rounded-full animate-ping bg-green-500/20"></div>
                   )}
                 </div>
 
                 {/* Status Text */}
                 <div>
                   <h2 className="text-2xl font-bold mb-2">
-                    {isConnected ? "Вы на связи с AI-преподавателем" : "Нажмите для начала урока"}
+                    {isRecording ? "Идет запись и распознавание" : "Готов к записи"}
                   </h2>
-                  <p className="text-muted-foreground">
-                    {isConnected 
-                      ? "Говорите свободно, AI-преподаватель вас слушает" 
-                      : "Голосовое общение в реальном времени"}
+                  <p className="text-muted-foreground mb-3">
+                    {isRecording
+                      ? "Говорите свободно - текст выводится в консоль"
+                      : "Нажмите кнопку для начала записи и распознавания речи"
+                    }
                   </p>
+
+                  {/* Recording Status */}
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {isRecording && (
+                      <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200 animate-pulse">
+                        🎤 Запись активна...
+                      </Badge>
+                    )}
+                    {isTranscribing && (
+                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                        Распознавание...
+                      </Badge>
+                    )}
+                    {isGeneratingResponse && (
+                      <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
+                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                        🤖 Думаю...
+                      </Badge>
+                    )}
+                    {isSpeaking && (
+                      <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-200 animate-pulse">
+                        🔊 Говорю...
+                      </Badge>
+                    )}
+                    {!isRecording && (
+                      <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
+                        🔇 Ожидание начала
+                      </Badge>
+                    )}
+                  </div>
                 </div>
 
                 {/* Control Buttons */}
                 <div className="flex flex-wrap justify-center gap-4">
-                  {isConnected && (
-                    <>
-                      <Button
-                        variant={isMuted ? "destructive" : "outline"}
-                        size="lg"
-                        className="w-16 h-16 rounded-full"
-                        onClick={() => setIsMuted(!isMuted)}
-                      >
-                        {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-                      </Button>
-                      <Button
-                        variant={!isSpeakerOn ? "secondary" : "outline"}
-                        size="lg"
-                        className="w-16 h-16 rounded-full"
-                        onClick={() => setIsSpeakerOn(!isSpeakerOn)}
-                      >
-                        {isSpeakerOn ? <Volume2 className="w-6 h-6" /> : <VolumeX className="w-6 h-6" />}
-                      </Button>
-                    </>
-                  )}
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    className={`w-16 h-16 rounded-full ${isMicEnabled ? 'bg-green-50 border-green-200 hover:bg-green-100' : 'bg-red-50 border-red-200 hover:bg-red-100'}`}
+                    onClick={handleToggleMic}
+                    title={isMicEnabled ? "Отключить микрофон" : "Включить микрофон"}
+                  >
+                    {isMicEnabled ? (
+                      <Mic className="w-6 h-6 text-green-600" />
+                    ) : (
+                      <MicOff className="w-6 h-6 text-red-600" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    className={`w-16 h-16 rounded-full ${isSoundEnabled ? 'bg-blue-50 border-blue-200 hover:bg-blue-100' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}
+                    onClick={handleToggleSound}
+                    title={isSoundEnabled ? "Отключить звук" : "Включить звук"}
+                  >
+                    {isSoundEnabled ? (
+                      <Volume2 className="w-6 h-6 text-blue-600" />
+                    ) : (
+                      <VolumeX className="w-6 h-6 text-gray-600" />
+                    )}
+                  </Button>
                 </div>
 
                 {/* Main Action Button */}
                 <Button
                   size="lg"
-                  className={`w-full max-w-xs h-14 text-lg ${isConnected ? 'bg-red-500 hover:bg-red-600' : ''}`}
-                  onClick={handleConnect}
+                  className={`w-full max-w-xs h-14 text-lg ${isRecording ? 'bg-red-500 hover:bg-red-600' : ''}`}
+                  onClick={handleStartStopRecording}
                 >
-                  {isConnected ? (
+                  {isRecording ? (
                     <>
                       <PhoneOff className="w-5 h-5 mr-2" />
-                      Завершить урок
+                      Остановить запись
                     </>
                   ) : (
                     <>
@@ -96,22 +613,10 @@ const VoiceChat = () => {
                     </>
                   )}
                 </Button>
-
-                {/* Tips */}
-                {!isConnected && (
-                  <div className="mt-8 p-4 bg-muted rounded-lg text-left space-y-2">
-                    <p className="font-semibold text-sm">Советы для эффективного обучения:</p>
-                    <ul className="text-sm text-muted-foreground space-y-1 list-disc list-inside">
-                      <li>Говорите четко и не спеша</li>
-                      <li>Задавайте конкретные вопросы</li>
-                      <li>Используйте наушники для лучшего качества звука</li>
-                      <li>Найдите тихое место для занятия</li>
-                    </ul>
-                  </div>
-                )}
               </div>
             </CardContent>
           </Card>
+
         </div>
       </main>
     </div>

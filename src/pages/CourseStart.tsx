@@ -1,14 +1,18 @@
 import Navigation from "@/components/Navigation";
-import { GraduationCap, Target } from "lucide-react";
+import { GraduationCap, Target, BookOpen, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useParams, useNavigate } from "react-router-dom";
 import { useState } from "react";
+import { addCourse } from "@/lib/api";
+import { useToast } from "@/hooks/use-toast";
 
 const CourseStart = () => {
   const { subjectId } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   const subjectNames: Record<string, string> = {
     english: "Английский язык",
@@ -22,18 +26,85 @@ const CourseStart = () => {
     chinese: "Китайский язык"
   };
 
+  const subjectIcons: Record<string, string> = {
+    english: "🇬🇧",
+    russian: "📖",
+    math: "🔢",
+    physics: "⚛️",
+    history: "🏛️",
+    geography: "🌍",
+    social: "👥",
+    arabic: "🇸🇦",
+    chinese: "🇨🇳"
+  };
+
+  // Языковые предметы с целями
+  const languageSubjects = ["english", "chinese", "arabic"];
+  const isLanguageSubject = languageSubjects.includes(subjectId || "");
+
   const grades = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-  
-  const goals = [
-    { id: "school", title: "Школьная программа", description: "Изучение по стандартной программе", icon: "📚" },
-    { id: "oge", title: "Подготовка к ОГЭ", description: "Подготовка к экзамену в 9 классе", icon: "📝" },
-    { id: "ege", title: "Подготовка к ЕГЭ", description: "Подготовка к экзамену в 11 классе", icon: "🎓" },
-    { id: "advanced", title: "Углубленное изучение", description: "Расширенная программа", icon: "🚀" }
+
+  // Цели только для языков (Английский, Китайский, Арабский)
+  const languageGoals = [
+    { id: "travel", title: "Для путешествий", description: "Базовые фразы и общение в поездках", icon: "✈️" },
+    { id: "communication", title: "Для общения", description: "Разговорный язык и повседневное общение", icon: "💬" },
+    { id: "study", title: "Для обучения", description: "Академический язык и подготовка к экзаменам", icon: "📖" }
   ];
 
-  const handleStart = () => {
-    if (selectedOption) {
-      navigate(`/learning-mode/${subjectId}-${selectedOption}`);
+  // Цели показываются только для языковых предметов
+  const goals = isLanguageSubject ? languageGoals : [];
+
+  const getSelectedInfo = () => {
+    if (!selectedOption) return null;
+    
+    if (selectedOption.startsWith('grade-')) {
+      const grade = selectedOption.replace('grade-', '');
+      return { type: 'grade', value: grade, name: `${grade} класс` };
+    } else if (selectedOption.startsWith('goal-')) {
+      const goalId = selectedOption.replace('goal-', '');
+      const goal = goals.find(g => g.id === goalId);
+      return { type: 'goal', value: goalId, name: goal?.title || '', icon: goal?.icon };
+    }
+    return null;
+  };
+
+  const handleStartCourse = async (mode: 'lesson' | 'voice') => {
+    if (!selectedOption || !subjectId) return;
+    
+    setIsLoading(true);
+    const info = getSelectedInfo();
+    
+    try {
+      // Add course to library
+      await addCourse({
+        subjectId,
+        subjectName: subjectNames[subjectId] || subjectId,
+        grade: info?.type === 'grade' ? info.value : undefined,
+        goal: info?.type === 'goal' ? info.value : undefined,
+        goalName: info?.type === 'goal' ? info.name : undefined,
+        icon: subjectIcons[subjectId] || '📚'
+      });
+
+      toast({
+        title: "Курс добавлен",
+        description: `${subjectNames[subjectId]} добавлен в вашу библиотеку`,
+      });
+
+      // Navigate to selected mode
+      const courseId = `${subjectId}-${selectedOption}`;
+      if (mode === 'lesson') {
+        navigate(`/learning-mode/${courseId}`);
+      } else if (mode === 'voice') {
+        navigate(`/voice-chat/${courseId}`);
+      }
+    } catch (error) {
+      toast({
+        title: "Ошибка",
+        description: error instanceof Error ? error.message : "Не удалось добавить курс",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -71,46 +142,64 @@ const CourseStart = () => {
             </div>
           </section>
 
-          <section>
-            <div className="flex items-center gap-2 mb-6">
-              <Target className="w-6 h-6 text-primary" />
-              <h2 className="text-2xl font-bold">Или выберите цель</h2>
-            </div>
-            <div className="grid md:grid-cols-2 gap-4">
-              {goals.map((goal) => (
-                <Card
-                  key={goal.id}
-                  className={`cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
-                    selectedOption === `goal-${goal.id}` 
-                      ? "border-primary shadow-lg" 
-                      : "hover:shadow-md"
-                  }`}
-                  onClick={() => setSelectedOption(`goal-${goal.id}`)}
-                >
-                  <CardHeader>
-                    <div className="flex items-center gap-3">
-                      <div className="text-3xl">{goal.icon}</div>
-                      <div className="flex-1">
-                        <CardTitle className="text-lg">{goal.title}</CardTitle>
-                        <CardDescription>{goal.description}</CardDescription>
+          {goals.length > 0 && (
+            <section>
+              <div className="flex items-center gap-2 mb-6">
+                <Target className="w-6 h-6 text-primary" />
+                <h2 className="text-2xl font-bold">Или выберите цель</h2>
+              </div>
+              <div className="grid md:grid-cols-2 gap-4">
+                {goals.map((goal) => (
+                  <Card
+                    key={goal.id}
+                    className={`cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
+                      selectedOption === `goal-${goal.id}`
+                        ? "border-primary shadow-lg"
+                        : "hover:shadow-md"
+                    }`}
+                    onClick={() => setSelectedOption(`goal-${goal.id}`)}
+                  >
+                    <CardHeader>
+                      <div className="flex items-center gap-3">
+                        <div className="text-3xl">{goal.icon}</div>
+                        <div className="flex-1">
+                          <CardTitle className="text-lg">{goal.title}</CardTitle>
+                          <CardDescription>{goal.description}</CardDescription>
+                        </div>
                       </div>
-                    </div>
-                  </CardHeader>
-                </Card>
-              ))}
-            </div>
-          </section>
+                    </CardHeader>
+                  </Card>
+                ))}
+              </div>
+            </section>
+          )}
 
-          <div className="mt-12 flex justify-center">
-            <Button 
-              size="lg" 
-              className="px-12"
-              disabled={!selectedOption}
-              onClick={handleStart}
-            >
-              Продолжить
-            </Button>
-          </div>
+          {selectedOption && (
+            <div className="mt-12 animate-fade-in">
+              <h3 className="text-xl font-semibold text-center mb-6">Выберите способ обучения</h3>
+              <div className="grid md:grid-cols-2 gap-4 max-w-2xl mx-auto">
+                <Button
+                  size="lg"
+                  className="h-20 flex flex-col gap-2"
+                  disabled={isLoading}
+                  onClick={() => handleStartCourse('lesson')}
+                >
+                  <BookOpen className="w-6 h-6" />
+                  <span>Начать урок</span>
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  className="h-20 flex flex-col gap-2"
+                  disabled={isLoading}
+                  onClick={() => handleStartCourse('voice')}
+                >
+                  <Mic className="w-6 h-6" />
+                  <span>Голосовой чат</span>
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
     </div>
