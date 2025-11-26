@@ -106,3 +106,68 @@ export const deleteCourse = async (courseId: string): Promise<void> => {
   }
 };
 
+// Learning profile types
+export interface LearningProfile {
+  id: number;
+  user_id: string;
+  course_id: string;
+  strong_topics?: string;
+  weak_topics?: string;
+  homework_history?: string;
+  current_homework?: string;
+  current_homework_status?: string;
+  learning_style?: string;
+  learning_pace?: string;
+  current_topic_understanding?: number;
+  teacher_notes?: string;
+  next_lesson_recommendations?: string;
+  subject_mastery_percentage?: number;
+  topics_completed?: number;
+  last_activity_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// Get learning profile for specific course
+export const getLearningProfile = async (courseId: string): Promise<LearningProfile> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/learning-profile/${courseId}`, {
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка получения профиля обучения');
+  }
+
+  const data = await response.json();
+  return data.profile;
+};
+
+// Update learning profile
+export const updateLearningProfile = async (courseId: string, updates: Partial<LearningProfile>): Promise<LearningProfile> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/learning-profile/${courseId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(updates)
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка обновления профиля обучения');
+  }
+
+  const data = await response.json();
+  return data.profile;
+};
+

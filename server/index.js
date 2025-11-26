@@ -489,7 +489,7 @@ const subjectNamesRu = {
 };
 
 // Generate voice chat prompt for conversational AI teacher
-function generateVoiceChatPrompt(courseId, userProfile, pendingHomework) {
+function generateVoiceChatPrompt(courseId, userProfile, learningProfile, pendingHomework) {
   const parts = courseId.split('-');
   const subjectId = parts[0];
   const optionType = parts[1];
@@ -543,6 +543,25 @@ function generateVoiceChatPrompt(courseId, userProfile, pendingHomework) {
     }
     if (interestsStr) {
       teacherIntro += ` Ученик интересуется: ${interestsStr}.`;
+    }
+  }
+
+  // Add learning profile information
+  if (learningProfile) {
+    if (learningProfile.strong_topics) {
+      teacherIntro += ` Сильные темы ученика: ${learningProfile.strong_topics}.`;
+    }
+    if (learningProfile.weak_topics) {
+      teacherIntro += ` Слабые темы ученика: ${learningProfile.weak_topics}.`;
+    }
+    if (learningProfile.current_topic_understanding) {
+      teacherIntro += ` Текущий уровень понимания темы: ${learningProfile.current_topic_understanding}/10.`;
+    }
+    if (learningProfile.subject_mastery_percentage) {
+      teacherIntro += ` Общий процент освоения предмета: ${learningProfile.subject_mastery_percentage}%.`;
+    }
+    if (learningProfile.teacher_notes) {
+      teacherIntro += ` Заметки о ученике: ${learningProfile.teacher_notes}.`;
     }
   }
 
@@ -662,11 +681,59 @@ function getOrCreateUserProfile(userId) {
 // Get pending homework for course
 function getPendingHomework(userId, courseId) {
   return db.prepare(`
-    SELECT * FROM homework 
+    SELECT * FROM homework
     WHERE user_id = ? AND course_id = ? AND status = 'pending'
     ORDER BY created_at DESC
     LIMIT 5
   `).all(userId, courseId);
+}
+
+// Get or create user learning profile for specific course
+function getOrCreateUserLearningProfile(userId, courseId) {
+  let profile = db.prepare('SELECT * FROM user_learning_profiles WHERE user_id = ? AND course_id = ?').get(userId, courseId);
+
+  if (!profile) {
+    const profileId = db.prepare(`
+      INSERT INTO user_learning_profiles (
+        user_id, course_id, learning_style, learning_pace,
+        current_topic_understanding, subject_mastery_percentage,
+        topics_completed, last_activity_at, created_at, updated_at
+      ) VALUES (?, ?, 'visual', 'normal', 5, 0.0, 0, ?, ?, ?)
+    `).run(userId, courseId, new Date().toISOString(), new Date().toISOString(), new Date().toISOString()).lastInsertRowid;
+
+    profile = db.prepare('SELECT * FROM user_learning_profiles WHERE id = ?').get(profileId);
+  }
+
+  return profile;
+}
+
+// Update user learning profile
+function updateUserLearningProfile(userId, courseId, updates) {
+  const fields = [];
+  const values = [];
+
+  Object.keys(updates).forEach(key => {
+    if (updates[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(updates[key]);
+    }
+  });
+
+  if (fields.length > 0) {
+    fields.push('updated_at = ?');
+    fields.push('last_activity_at = ?');
+    values.push(new Date().toISOString(), new Date().toISOString());
+
+    values.push(userId, courseId);
+
+    db.prepare(`
+      UPDATE user_learning_profiles
+      SET ${fields.join(', ')}
+      WHERE user_id = ? AND course_id = ?
+    `).run(...values);
+  }
+
+  return getOrCreateUserLearningProfile(userId, courseId);
 }
 
 // Get chat history (last 30 messages)
@@ -798,10 +865,12 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
     `).run(userMessageId, userId, courseId, content.trim(), messageType);
     console.log('✅ Сообщение пользователя сохранено, ID:', userMessageId);
 
-    // Get user profile
+    // Get user profile and learning profile
     console.log('👤 Получение профиля пользователя...');
     const userProfile = getOrCreateUserProfile(userId);
+    const learningProfile = getOrCreateUserLearningProfile(userId, courseId);
     console.log('✅ Профиль получен:', userProfile);
+    console.log('✅ Профиль обучения получен:', learningProfile);
 
     // Get pending homework
     console.log('📚 Получение домашних заданий...');
@@ -824,7 +893,7 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
     const isVoiceChat = messageType === 'voice';
     console.log('🎤 Это голосовой чат?', isVoiceChat);
     const systemPrompt = isVoiceChat
-      ? generateVoiceChatPrompt(courseId, userProfile, pendingHomework)
+      ? generateVoiceChatPrompt(courseId, userProfile, learningProfile, pendingHomework)
       : generateSystemPrompt(courseId, userProfile, pendingHomework);
     console.log('✅ Промпт сгенерирован, длина:', systemPrompt.length);
 
@@ -890,10 +959,16 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
 
         // Update user profile stats
         db.prepare(`
-          UPDATE user_profiles 
+          UPDATE user_profiles
           SET total_messages = total_messages + 2, updated_at = datetime('now')
           WHERE user_id = ?
         `).run(userId);
+
+        // Update learning profile stats
+        updateUserLearningProfile(userId, courseId, {
+          topics_completed: (learningProfile.topics_completed || 0) + 1,
+          subject_mastery_percentage: Math.min((learningProfile.subject_mastery_percentage || 0) + 5, 100)
+        });
 
         return res.json({
           message: fullResponse,
@@ -1121,6 +1196,49 @@ app.get('/api/profile', authenticateToken, (req, res) => {
     res.json({ profile });
   } catch (error) {
     console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Get user learning profile for specific course
+app.get('/api/learning-profile/:courseId', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { courseId } = req.params;
+    const profile = getOrCreateUserLearningProfile(userId, courseId);
+    res.json({ profile });
+  } catch (error) {
+    console.error('Get learning profile error:', error);
+    res.status(500).json({ error: 'Ошибка сервера' });
+  }
+});
+
+// Update user learning profile
+app.put('/api/learning-profile/:courseId', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { courseId } = req.params;
+    const updates = req.body;
+
+    // Validate allowed fields
+    const allowedFields = [
+      'strong_topics', 'weak_topics', 'homework_history', 'current_homework',
+      'current_homework_status', 'learning_style', 'learning_pace',
+      'current_topic_understanding', 'teacher_notes', 'next_lesson_recommendations',
+      'subject_mastery_percentage', 'topics_completed'
+    ];
+
+    const filteredUpdates = {};
+    Object.keys(updates).forEach(key => {
+      if (allowedFields.includes(key)) {
+        filteredUpdates[key] = updates[key];
+      }
+    });
+
+    const profile = updateUserLearningProfile(userId, courseId, filteredUpdates);
+    res.json({ profile });
+  } catch (error) {
+    console.error('Update learning profile error:', error);
     res.status(500).json({ error: 'Ошибка сервера' });
   }
 });

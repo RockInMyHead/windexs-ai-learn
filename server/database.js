@@ -123,5 +123,31 @@ db.exec(`
   )
 `);
 
+// Create user_learning_profiles table for detailed course-specific learning profiles
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_learning_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    strong_topics TEXT,
+    weak_topics TEXT,
+    homework_history TEXT,
+    current_homework TEXT,
+    current_homework_status TEXT,
+    learning_style TEXT,
+    learning_pace TEXT,
+    current_topic_understanding INTEGER,
+    teacher_notes TEXT,
+    next_lesson_recommendations TEXT,
+    subject_mastery_percentage REAL,
+    topics_completed INTEGER,
+    last_activity_at TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(user_id, course_id)
+  )
+`);
+
 export default db;
 
