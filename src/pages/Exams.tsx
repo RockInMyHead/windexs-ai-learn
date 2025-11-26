@@ -113,9 +113,6 @@ const Exams = () => {
                     <CardHeader>
                       <div className="text-4xl mb-3 text-center">{course.icon}</div>
                       <CardTitle className="text-center">{course.title}</CardTitle>
-                      <CardDescription className="text-center">
-                        {course.lessons} уроков
-                      </CardDescription>
                     </CardHeader>
                     <CardContent>
                       <Button 

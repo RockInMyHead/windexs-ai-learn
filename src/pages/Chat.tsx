@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Sparkles, Loader2 } from "lucide-react";
+import { Send, Sparkles, Loader2, Paperclip, Image } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ interface Message {
   role: 'user' | 'ai';
   content: string;
   timestamp: Date;
+  file?: File;
 }
 
 const Chat = () => {
@@ -21,7 +22,9 @@ const Chat = () => {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -34,12 +37,18 @@ const Chat = () => {
   }, [messages]);
 
   const sendMessage = async (messageText: string) => {
-    if (!messageText.trim() || isLoading) return;
+    if ((!messageText.trim() && !selectedFile) || isLoading) return;
+
+    let messageContent = messageText.trim();
+    if (selectedFile) {
+      messageContent += `\n\n[Прикреплен файл: ${selectedFile.name}]`;
+    }
 
     const userMessage: Message = {
       role: 'user',
-      content: messageText.trim(),
-      timestamp: new Date()
+      content: messageContent,
+      timestamp: new Date(),
+      file: selectedFile
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -93,6 +102,26 @@ const Chat = () => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage(inputValue);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+      // Можно добавить логику для предварительного просмотра или отправки файла
+      console.log('Selected file:', file.name, file.type, file.size);
+    }
+  };
+
+  const handleFileButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const clearSelectedFile = () => {
+    setSelectedFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -154,7 +183,54 @@ const Chat = () => {
             </div>
 
             <div className="p-6 border-t">
+              {/* Selected file preview */}
+              {selectedFile && (
+                <div className="mb-3 p-3 bg-muted rounded-lg flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    {selectedFile.type.startsWith('image/') ? (
+                      <Image className="w-4 h-4 text-primary" />
+                    ) : (
+                      <Paperclip className="w-4 h-4 text-primary" />
+                    )}
+                    <span className="text-sm font-medium">{selectedFile.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      ({(selectedFile.size / 1024).toFixed(1)} KB)
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearSelectedFile}
+                    className="h-6 w-6 p-0 hover:bg-destructive hover:text-destructive-foreground"
+                  >
+                    ×
+                  </Button>
+                </div>
+              )}
+
               <form onSubmit={handleSubmit} className="flex gap-3">
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,.pdf,.doc,.docx,.txt"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+
+                {/* File upload button */}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={handleFileButtonClick}
+                  disabled={isLoading}
+                  className="shrink-0"
+                  title="Прикрепить файл"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </Button>
+
                 <Input
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
@@ -163,9 +239,10 @@ const Chat = () => {
                   className="flex-1"
                   disabled={isLoading}
                 />
+
                 <Button
                   type="submit"
-                  disabled={!inputValue.trim() || isLoading}
+                  disabled={(!inputValue.trim() && !selectedFile) || isLoading}
                   className="px-6"
                 >
                   {isLoading ? (
