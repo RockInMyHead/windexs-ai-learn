@@ -57,22 +57,22 @@ const Hero = () => {
             </Button>
           </div>
           
-          <div className="grid grid-cols-3 gap-6 pt-16 max-w-3xl mx-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 pt-12 sm:pt-16 max-w-4xl mx-auto px-4 sm:px-0">
             {[
               { value: "10K+", label: "Студентов", sublabel: "активно учатся" },
               { value: "50+", label: "Курсов", sublabel: "по всем направлениям" },
               { value: "98%", label: "Успешности", sublabel: "достижения целей" }
             ].map((stat, i) => (
-              <div 
-                key={i} 
-                className="group p-6 bg-card/70 backdrop-blur-sm rounded-3xl border border-border/50 hover:border-primary/50 transition-all duration-300 hover:shadow-lg hover:shadow-primary/20 animate-scale-in"
+              <div
+                key={i}
+                className="group p-4 sm:p-6 bg-card/70 backdrop-blur-sm rounded-2xl sm:rounded-3xl border border-border/50 hover:border-primary/50 transition-all duration-300 hover:shadow-lg hover:shadow-primary/20 animate-scale-in text-center"
                 style={{ animationDelay: `${i * 0.1}s` }}
               >
-                <div className="text-4xl md:text-5xl font-bold bg-gradient-to-br from-primary to-accent bg-clip-text text-transparent mb-2">
+                <div className="text-3xl sm:text-4xl lg:text-5xl font-bold bg-gradient-to-br from-primary to-accent bg-clip-text text-transparent mb-2">
                   {stat.value}
                 </div>
-                <div className="text-sm font-semibold text-foreground">{stat.label}</div>
-                <div className="text-xs text-muted-foreground mt-1">{stat.sublabel}</div>
+                <div className="text-sm sm:text-base font-semibold text-foreground">{stat.label}</div>
+                <div className="text-xs sm:text-sm text-muted-foreground mt-1">{stat.sublabel}</div>
               </div>
             ))}
           </div>
