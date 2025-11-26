@@ -54,6 +54,19 @@ const VoiceChat = () => {
   const [userProfile, setUserProfile] = useState<any>(null);
 
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastTranscriptRef = useRef<string>('');
+
+  // Function to stop current TTS playback
+  const stopCurrentTTS = useCallback(() => {
+    if (currentAudioRef.current) {
+      console.log('🛑 Прерываю текущую озвучку...');
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+      setIsSpeaking(false);
+    }
+  }, []);
 
   // Initialize Web Speech API
   const initializeSpeechRecognition = useCallback(() => {
@@ -95,7 +108,16 @@ const VoiceChat = () => {
         console.log('🎯 Текст для вывода:', transcript);
 
         if (transcript) {
-          // Send to LLM and get response
+          // Interrupt current TTS if playing
+          if (isSpeaking) {
+            console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
+            stopCurrentTTS();
+          }
+
+          // Save current transcript for context
+          lastTranscriptRef.current = transcript;
+
+          // Send to LLM and get response (include previous context if interrupted)
           const llmResponse = await sendToLLM(transcript);
 
           // Speak the response (recognition continues automatically in continuous mode)
@@ -351,6 +373,14 @@ const VoiceChat = () => {
       //  - сам генерирует системный промт (generateVoiceChatPrompt)
       // Поэтому с фронта отправляем ТОЛЬКО чистую реплику пользователя.
 
+      // Prepare message with context if TTS was interrupted
+      let messageContent = userMessage;
+      if (isSpeaking && lastTranscriptRef.current && lastTranscriptRef.current !== userMessage) {
+        // Include previous context when TTS was interrupted
+        messageContent = `Предыдущий контекст: "${lastTranscriptRef.current}". Новый вопрос: "${userMessage}"`;
+        console.log('📝 Передаю контекст прерванного разговора:', messageContent);
+      }
+
       // Send raw user message to server API
       const response = await fetch(`http://localhost:3001/api/chat/${courseId}/message`, {
         method: 'POST',
@@ -359,10 +389,11 @@ const VoiceChat = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          // В content отправляем только то, что сказал пользователь.
+          // В content отправляем сообщение пользователя с контекстом если нужно.
           // Сервер построит системный промт учителя Юлии сам.
-          content: userMessage,
-          messageType: 'voice'
+          content: messageContent,
+          messageType: 'voice',
+          interrupted: isSpeaking // Flag to indicate if this was an interruption
         })
       });
 
@@ -388,7 +419,7 @@ const VoiceChat = () => {
     } finally {
       setIsGeneratingResponse(false);
     }
-  }, [token, userProfile, courseId, getUserProfile]);
+  }, [token, userProfile, courseId, getUserProfile, isSpeaking]);
 
   // Convert text to speech using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
@@ -424,9 +455,13 @@ const VoiceChat = () => {
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
+      // Stop any currently playing audio
+      stopCurrentTTS();
+
       // Create audio element and play
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
 
       // Event handlers
       audio.onplay = () => {
@@ -436,6 +471,7 @@ const VoiceChat = () => {
       audio.onended = () => {
         console.log('🔊 Озвучка завершена');
         setIsSpeaking(false);
+        currentAudioRef.current = null;
         // Clean up URL
         URL.revokeObjectURL(audioUrl);
       };
@@ -443,6 +479,7 @@ const VoiceChat = () => {
       audio.onerror = (event) => {
         console.error('❌ Ошибка воспроизведения аудио:', event);
         setIsSpeaking(false);
+        currentAudioRef.current = null;
         URL.revokeObjectURL(audioUrl);
         toast({
           title: "Ошибка озвучки",
@@ -483,12 +520,14 @@ const VoiceChat = () => {
           // Already stopped
         }
       }
-      // Stop speech synthesis
+      // Stop current TTS
+      stopCurrentTTS();
+      // Stop speech synthesis (fallback)
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
     };
-  }, []);
+  }, [stopCurrentTTS]);
 
   return (
     <div className="min-h-screen bg-background">
