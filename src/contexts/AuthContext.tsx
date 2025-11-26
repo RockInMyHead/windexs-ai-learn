@@ -22,7 +22,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const API_URL = 'https://teacher.windexs.ru/api';
+const API_URL = 'http://localhost:3001/api';
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -41,36 +41,23 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const fetchUser = async (authToken: string) => {
     try {
-      const response = await fetch(`${API_URL}/profile`, {
+      const response = await fetch(`${API_URL}/auth/me`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
         }
       });
-
+      
       if (response.ok) {
-        let data;
-        try {
-          data = await response.json();
-        } catch (error) {
-          console.error('Failed to parse profile response:', error);
-          // Если не можем получить профиль, оставляем базового пользователя
-          setIsLoading(false);
-          return;
-        }
-        setUser(data.profile);
+        const data = await response.json();
+        setUser(data.user);
       } else {
-        console.error('Failed to fetch user profile:', response.status, response.statusText);
-        // Если не можем получить профиль, оставляем базового пользователя
-        // localStorage.removeItem('token'); // Не удаляем токен при ошибке профиля
-        // setToken(null);
-        // setUser(null);
+        localStorage.removeItem('token');
+        setToken(null);
       }
     } catch (error) {
       console.error('Failed to fetch user:', error);
-      // При сетевой ошибке тоже оставляем базового пользователя
-      // localStorage.removeItem('token');
-      // setToken(null);
-      // setUser(null);
+      localStorage.removeItem('token');
+      setToken(null);
     } finally {
       setIsLoading(false);
     }
@@ -85,13 +72,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: JSON.stringify({ email, password })
     });
 
-    let data;
-    try {
-      data = await response.json();
-    } catch (error) {
-      console.error('Failed to parse login response:', error);
-      throw new Error('Ошибка сервера: неправильный ответ');
-    }
+    const data = await response.json();
 
     if (!response.ok) {
       throw new Error(data.error || 'Ошибка входа');
@@ -99,9 +80,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    setUser(data.user); // Сначала устанавливаем базовую информацию о пользователе
-    // После небольшой задержки получаем полный профиль
-    setTimeout(() => fetchUser(data.token), 500);
+    setUser(data.user);
   };
 
   const register = async (email: string, password: string, name: string) => {
@@ -113,13 +92,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: JSON.stringify({ email, password, name })
     });
 
-    let data;
-    try {
-      data = await response.json();
-    } catch (error) {
-      console.error('Failed to parse registration response:', error);
-      throw new Error('Ошибка сервера: неправильный ответ');
-    }
+    const data = await response.json();
 
     if (!response.ok) {
       throw new Error(data.error || 'Ошибка регистрации');
@@ -127,9 +100,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    setUser(data.user); // Сначала устанавливаем базовую информацию о пользователе
-    // После небольшой задержки получаем полный профиль
-    setTimeout(() => fetchUser(data.token), 500);
+    setUser(data.user);
   };
 
   const logout = async () => {

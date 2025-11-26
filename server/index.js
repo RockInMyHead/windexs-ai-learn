@@ -339,7 +339,7 @@ app.get('/api/courses', authenticateToken, (req, res) => {
     const userId = req.user.userId;
     const courses = db.prepare(`
       SELECT id, subject_id, subject_name, grade, goal, goal_name, icon, progress, next_lesson, created_at
-      FROM user_courses 
+      FROM user_courses
       WHERE user_id = ?
       ORDER BY updated_at DESC
     `).all(userId);
@@ -348,7 +348,7 @@ app.get('/api/courses', authenticateToken, (req, res) => {
     courses.forEach(course => {
       console.log(`  - ${course.id}: ${course.subject_name} (${course.goal_name || 'без цели'})`);
     });
-    
+
     res.json({ courses });
   } catch (error) {
     console.error('Get courses error:', error);
@@ -686,7 +686,7 @@ function getOrCreateUserProfile(userId) {
 // Get pending homework for course
 function getPendingHomework(userId, courseId) {
   return db.prepare(`
-    SELECT * FROM homework 
+    SELECT * FROM homework
     WHERE user_id = ? AND course_id = ? AND status = 'pending'
     ORDER BY created_at DESC
     LIMIT 5
@@ -985,7 +985,7 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
 
         // Update user profile stats
         db.prepare(`
-          UPDATE user_profiles 
+          UPDATE user_profiles
           SET total_messages = total_messages + 2, updated_at = datetime('now')
           WHERE user_id = ?
         `).run(userId);

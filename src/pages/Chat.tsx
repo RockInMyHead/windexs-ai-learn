@@ -74,11 +74,10 @@ const Chat = () => {
 
     setMessages(prev => [...prev, userMessage]);
     setInputValue('');
-    setSelectedFile(null); // Clear selected file after sending
     setIsLoading(true);
 
     try {
-      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
+      const response = await fetch('http://localhost:3001/api/chat/general', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -219,7 +218,7 @@ const Chat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch('http://localhost:3001/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -304,14 +303,6 @@ const Chat = () => {
                       </div>
                     )}
                       <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
-                      {message.file && (
-                        <div className="mt-2 p-2 bg-muted/50 rounded-lg flex items-center gap-2">
-                          <Paperclip className="w-3 h-3 text-muted-foreground" />
-                          <span className="text-xs text-muted-foreground">
-                            {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
-                          </span>
-                        </div>
-                      )}
                     <div className={`text-xs mt-2 ${
                       message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
                     }`}>

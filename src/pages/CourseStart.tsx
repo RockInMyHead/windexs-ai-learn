@@ -177,25 +177,15 @@ const CourseStart = () => {
           {selectedOption && (
             <div className="mt-12 animate-fade-in">
               <h3 className="text-xl font-semibold text-center mb-6">Выберите способ обучения</h3>
-              <div className="grid md:grid-cols-2 gap-4 max-w-2xl mx-auto">
+              <div className="flex justify-center max-w-md mx-auto">
                 <Button
                   size="lg"
-                  className="h-20 flex flex-col gap-2"
+                  className="h-20 flex flex-col gap-2 w-full max-w-sm"
                   disabled={isLoading}
                   onClick={() => handleStartCourse('lesson')}
                 >
                   <BookOpen className="w-6 h-6" />
                   <span>Начать урок</span>
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="h-20 flex flex-col gap-2"
-                  disabled={isLoading}
-                  onClick={() => handleStartCourse('voice')}
-                >
-                  <Mic className="w-6 h-6" />
-                  <span>Голосовой чат</span>
                 </Button>
               </div>
             </div>

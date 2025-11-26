@@ -1,4 +1,4 @@
-const API_URL = 'https://teacher.windexs.ru/api';
+const API_URL = 'http://localhost:3001/api';
 
 export interface Course {
   id: string;
