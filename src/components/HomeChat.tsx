@@ -97,7 +97,7 @@ const HomeChat = () => {
   };
 
   return (
-    <section className="py-24 px-4 bg-gradient-to-b from-secondary/20 to-background">
+    <section id="home-chat" className="py-24 px-4 bg-gradient-to-b from-secondary/20 to-background">
       <div className="container mx-auto max-w-4xl">
         <div className="text-center mb-12 animate-fade-in">
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full border border-primary/20 mb-6">

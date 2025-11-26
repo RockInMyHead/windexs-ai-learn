@@ -2,6 +2,15 @@ import { Button } from "@/components/ui/button";
 import { Brain, Sparkles, ArrowRight, Play } from "lucide-react";
 
 const Hero = () => {
+  const scrollToChat = () => {
+    const chatSection = document.getElementById('home-chat');
+    if (chatSection) {
+      chatSection.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start'
+      });
+    }
+  };
   return (
     <section className="relative min-h-screen flex items-center justify-center px-4 py-20 overflow-hidden">
       <div className="absolute inset-0 bg-gradient-to-b from-background via-secondary/30 to-background" />
@@ -47,10 +56,11 @@ const Hero = () => {
               <div className="absolute inset-0 bg-gradient-to-r from-accent to-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             </Button>
             
-            <Button 
-              size="lg" 
+            <Button
+              size="lg"
               variant="outline"
-              className="border-2 border-primary/40 hover:bg-primary/10 hover:border-primary transition-all duration-300 px-8 py-6 text-lg group"
+              className="border-2 border-primary/40 hover:bg-primary/10 hover:border-primary hover:text-black transition-all duration-300 px-8 py-6 text-lg group"
+              onClick={scrollToChat}
             >
               <Play className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" />
               Как это работает
