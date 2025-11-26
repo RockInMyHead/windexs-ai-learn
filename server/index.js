@@ -490,13 +490,19 @@ const subjectNamesRu = {
 
 // Generate voice chat prompt for conversational AI teacher
 function generateVoiceChatPrompt(courseId, userProfile, learningProfile, pendingHomework) {
+  console.log('🎯 Генерация промпта для courseId:', courseId);
+
   const parts = courseId.split('-');
+  console.log('🔍 Разбор courseId:', { parts, subjectId: parts[0], optionType: parts[1], optionValue: parts.slice(2).join('-') });
+
   const subjectId = parts[0];
   const optionType = parts[1];
   const optionValue = parts.slice(2).join('-');
 
   const subjectName = subjectNamesRu[subjectId] || subjectId;
   let courseContext = subjectName;
+
+  console.log('📚 Формирование courseContext:', { subjectName, optionType, optionValue });
 
   if (optionType === 'grade') {
     courseContext = `${subjectName} для ${optionValue} класса`;
@@ -564,6 +570,8 @@ function generateVoiceChatPrompt(courseId, userProfile, learningProfile, pending
       teacherIntro += ` Заметки о ученике: ${learningProfile.teacher_notes}.`;
     }
   }
+
+  console.log('✅ Финальный courseContext:', courseContext);
 
   return `${teacherIntro}
 
@@ -787,7 +795,9 @@ function ensureCourseExists(userId, courseId) {
   `).get(userId, subjectId, grade, goal);
 
   if (existingCourse) {
-    return existingCourse.id;
+    // Return the original courseId, not the database ID
+    console.log('📚 Найден существующий курс, возвращаем оригинальный courseId:', courseId);
+    return courseId;
   }
 
   // Use user-specific course id to avoid collisions across users
