@@ -969,7 +969,7 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
           model: 'gpt-5.1',
           messages,
           temperature,
-          max_completion_tokens: 800,
+          max_completion_tokens: 400,
           stream: false
         });
 
