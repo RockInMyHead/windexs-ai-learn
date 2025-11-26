@@ -4,7 +4,6 @@ import Features from "@/components/Features";
 import AIProcess from "@/components/AIProcess";
 import HomeChat from "@/components/HomeChat";
 import CTA from "@/components/CTA";
-import Footer from "@/components/Footer";
 
 const Index = () => {
   return (
@@ -15,7 +14,6 @@ const Index = () => {
       <AIProcess />
       <HomeChat />
       <CTA />
-      <Footer />
     </div>
   );
 };
