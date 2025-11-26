@@ -3,32 +3,42 @@ import { BookOpen, Search, Filter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
+import { useNavigate } from "react-router-dom";
 
 const Library = () => {
-  const materials = [
+  const myCourses = [
     {
-      title: "Основы JavaScript",
-      category: "Программирование",
-      level: "Начальный",
-      lessons: 24,
+      id: "english-grade-8",
+      title: "Английский язык",
+      grade: "8 класс",
+      progress: 65,
+      icon: "🇬🇧",
+      nextLesson: "Present Perfect"
     },
     {
-      title: "React для начинающих",
-      category: "Программирование",
-      level: "Средний",
-      lessons: 18,
+      id: "math-grade-8",
+      title: "Математика",
+      grade: "8 класс",
+      progress: 42,
+      icon: "🔢",
+      nextLesson: "Квадратные уравнения"
     },
     {
-      title: "Математический анализ",
-      category: "Математика",
-      level: "Продвинутый",
-      lessons: 32,
+      id: "physics-grade-9",
+      title: "Физика",
+      grade: "9 класс",
+      progress: 78,
+      icon: "⚛️",
+      nextLesson: "Законы Ньютона"
     },
     {
-      title: "Английский язык B2",
-      category: "Языки",
-      level: "Средний",
-      lessons: 45,
+      id: "russian-grade-8",
+      title: "Русский язык",
+      grade: "8 класс",
+      progress: 55,
+      icon: "📖",
+      nextLesson: "Причастие"
     },
   ];
 
@@ -40,51 +50,48 @@ const Library = () => {
           <div className="text-center mb-12 animate-fade-in">
             <BookOpen className="w-16 h-16 mx-auto mb-4 text-primary" />
             <h1 className="text-4xl md:text-5xl font-bold mb-4 bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              Библиотека материалов
+              Мои курсы
             </h1>
             <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-              Тысячи учебных материалов, адаптированных под ваш уровень
+              Продолжайте изучение выбранных предметов
             </p>
           </div>
 
-          <div className="flex gap-4 mb-8">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-              <Input
-                placeholder="Поиск материалов..."
-                className="pl-10"
-              />
-            </div>
-            <Button variant="outline" className="gap-2">
-              <Filter className="w-4 h-4" />
-              Фильтры
-            </Button>
-          </div>
-
           <div className="grid md:grid-cols-2 gap-6">
-            {materials.map((material, index) => (
+            {myCourses.map((course, index) => (
               <Card
-                key={index}
-                className="hover:shadow-lg transition-all duration-300 hover:scale-[1.02] cursor-pointer animate-fade-in"
+                key={course.id}
+                className="hover:shadow-lg transition-all duration-300 animate-fade-in"
                 style={{ animationDelay: `${index * 100}ms` }}
               >
                 <CardHeader>
-                  <div className="flex justify-between items-start mb-2">
-                    <span className="text-xs font-semibold text-primary bg-primary/10 px-3 py-1 rounded-full">
-                      {material.category}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {material.level}
-                    </span>
+                  <div className="flex items-start gap-3 mb-2">
+                    <div className="text-3xl">{course.icon}</div>
+                    <div className="flex-1">
+                      <CardTitle className="text-xl">{course.title}</CardTitle>
+                      <CardDescription>{course.grade}</CardDescription>
+                    </div>
                   </div>
-                  <CardTitle className="text-xl">{material.title}</CardTitle>
-                  <CardDescription>
-                    {material.lessons} уроков
-                  </CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <Button className="w-full">
-                    Начать изучение
+                <CardContent className="space-y-4">
+                  <div>
+                    <div className="flex justify-between text-sm mb-2">
+                      <span className="text-muted-foreground">Прогресс</span>
+                      <span className="font-semibold text-primary">{course.progress}%</span>
+                    </div>
+                    <Progress value={course.progress} />
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    Следующий урок: <span className="text-foreground font-medium">{course.nextLesson}</span>
+                  </div>
+                  <Button 
+                    className="w-full"
+                    onClick={() => {
+                      const navigate = useNavigate();
+                      navigate(`/learning-mode/${course.id}`);
+                    }}
+                  >
+                    Продолжить обучение
                   </Button>
                 </CardContent>
               </Card>
