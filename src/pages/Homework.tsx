@@ -48,7 +48,7 @@ const Homework = () => {
     setIsLoading(true);
     try {
       // Load user courses
-      const coursesRes = await fetch('http://localhost:3001/api/courses', {
+      const coursesRes = await fetch('https://teacher.windexs.ru/api/courses', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       
@@ -60,7 +60,7 @@ const Homework = () => {
         const allHomework: HomeworkItem[] = [];
         for (const course of coursesData.courses || []) {
           const courseId = `${course.subject_id}-${course.grade ? 'grade-' + course.grade : 'goal-' + course.goal}`;
-          const hwRes = await fetch(`http://localhost:3001/api/homework/${courseId}`, {
+          const hwRes = await fetch(`https://teacher.windexs.ru/api/homework/${courseId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (hwRes.ok) {

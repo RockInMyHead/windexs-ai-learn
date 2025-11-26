@@ -67,3 +67,4 @@ const MathRenderer: React.FC<MathRendererProps> = ({ children, className }) => {
 };
 
 export default MathRenderer;
+

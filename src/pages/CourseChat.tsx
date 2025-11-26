@@ -61,7 +61,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:3001/api/chat/${courseId}/history`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -113,7 +113,7 @@ const CourseChat = () => {
     try {
       abortControllerRef.current = new AbortController();
 
-      const response = await fetch(`http://localhost:3001/api/chat/${courseId}/message`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -322,7 +322,7 @@ const CourseChat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('http://localhost:3001/api/tts', {
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
