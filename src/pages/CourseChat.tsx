@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, Loader2, MessageSquare, Bot } from "lucide-react";
+import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2, MessageSquare, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -32,7 +32,9 @@ const CourseChat = () => {
   const [recordingTime, setRecordingTime] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -299,6 +301,68 @@ const CourseChat = () => {
     return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   };
 
+  const speakMessage = async (messageId: string, text: string) => {
+    // If already speaking this message, stop it
+    if (speakingMessageId === messageId) {
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+        setCurrentAudio(null);
+      }
+      setSpeakingMessageId(null);
+      return;
+    }
+
+    // Stop any currently playing audio
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    }
+
+    try {
+      setSpeakingMessageId(messageId);
+
+      const response = await fetch('http://localhost:3001/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: text,
+          voice: 'shimmer'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate speech');
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.onended = () => {
+        setSpeakingMessageId(null);
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.onerror = () => {
+        setSpeakingMessageId(null);
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      setCurrentAudio(audio);
+      audio.play();
+
+    } catch (error) {
+      console.error('TTS error:', error);
+      setSpeakingMessageId(null);
+      setCurrentAudio(null);
+    }
+  };
+
   // Custom components for ReactMarkdown
   const MarkdownComponents = {
     h1: ({ children }: any) => <h1 className="text-xl font-bold mb-3 text-primary border-b border-primary/20 pb-1">{children}</h1>,
@@ -351,8 +415,13 @@ const CourseChat = () => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      // Cleanup audio
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+      }
     };
-  }, [isRecording]);
+  }, [isRecording, currentAudio]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -398,14 +467,31 @@ const CourseChat = () => {
                     }`}
                   >
                       {message.role === "assistant" && (
-                      <div className="flex items-center gap-2 mb-1">
-                        <Bot className="w-4 h-4 text-primary" />
-                        <span className="text-xs font-semibold text-primary">
-                          AI Преподаватель
-                        </span>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <Bot className="w-4 h-4 text-primary" />
+                          <span className="text-xs font-semibold text-primary">
+                            AI Преподаватель
+                          </span>
                           {message.isStreaming && (
                             <Loader2 className="w-3 h-3 animate-spin text-primary" />
                           )}
+                        </div>
+                        {!message.isStreaming && message.content && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => speakMessage(message.id, message.content)}
+                            className="h-6 w-6 p-0 hover:bg-primary/10"
+                            title={speakingMessageId === message.id ? "Остановить озвучку" : "Озвучить сообщение"}
+                          >
+                            {speakingMessageId === message.id ? (
+                              <VolumeX className="w-3 h-3 text-primary" />
+                            ) : (
+                              <Volume2 className="w-3 h-3 text-primary" />
+                            )}
+                          </Button>
+                        )}
                       </div>
                     )}
                       <div className="text-sm leading-relaxed markdown-content">

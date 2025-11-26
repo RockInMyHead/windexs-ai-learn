@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Sparkles, Loader2, Paperclip, Image, Camera } from "lucide-react";
+import { Send, Sparkles, Loader2, Paperclip, Image, Camera, Volume2, VolumeX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -27,6 +27,8 @@ const Chat = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<number | null>(null);
+  const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -42,14 +44,18 @@ const Chat = () => {
     }
   }, [messages]);
 
-  // Cleanup camera stream on unmount
+  // Cleanup camera stream and audio on unmount
   useEffect(() => {
     return () => {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+      }
     };
-  }, [stream]);
+  }, [stream, currentAudio]);
 
   const sendMessage = async (messageText: string) => {
     if ((!messageText.trim() && !selectedFile) || isLoading) return;
@@ -191,6 +197,68 @@ const Chat = () => {
     }, 'image/jpeg', 0.8);
   };
 
+  const speakMessage = async (messageId: number, text: string) => {
+    // If already speaking this message, stop it
+    if (speakingMessageId === messageId) {
+      if (currentAudio) {
+        currentAudio.pause();
+        currentAudio.currentTime = 0;
+        setCurrentAudio(null);
+      }
+      setSpeakingMessageId(null);
+      return;
+    }
+
+    // Stop any currently playing audio
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    }
+
+    try {
+      setSpeakingMessageId(messageId);
+
+      const response = await fetch('http://localhost:3001/api/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: text,
+          voice: 'shimmer'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate speech');
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.onended = () => {
+        setSpeakingMessageId(null);
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.onerror = () => {
+        setSpeakingMessageId(null);
+        setCurrentAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      setCurrentAudio(audio);
+      audio.play();
+
+    } catch (error) {
+      console.error('TTS error:', error);
+      setSpeakingMessageId(null);
+      setCurrentAudio(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
@@ -214,9 +282,24 @@ const Chat = () => {
                     }`}
                   >
                     {message.role === "ai" && (
-                      <div className="flex items-center gap-2 mb-1">
-                        <Sparkles className="w-4 h-4 text-primary" />
-                        <span className="text-xs font-medium text-primary">Юлия</span>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-primary" />
+                          <span className="text-xs font-medium text-primary">Юлия</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => speakMessage(index, message.content)}
+                          className="h-6 w-6 p-0 hover:bg-primary/10"
+                          title={speakingMessageId === index ? "Остановить озвучку" : "Озвучить сообщение"}
+                        >
+                          {speakingMessageId === index ? (
+                            <VolumeX className="w-3 h-3 text-primary" />
+                          ) : (
+                            <Volume2 className="w-3 h-3 text-primary" />
+                          )}
+                        </Button>
                       </div>
                     )}
                       <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
