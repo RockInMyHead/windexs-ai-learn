@@ -48,19 +48,29 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       });
 
       if (response.ok) {
-        const data = await response.json();
+        let data;
+        try {
+          data = await response.json();
+        } catch (error) {
+          console.error('Failed to parse profile response:', error);
+          // Если не можем получить профиль, оставляем базового пользователя
+          setIsLoading(false);
+          return;
+        }
         setUser(data.profile);
       } else {
         console.error('Failed to fetch user profile:', response.status, response.statusText);
-        localStorage.removeItem('token');
-        setToken(null);
-        setUser(null);
+        // Если не можем получить профиль, оставляем базового пользователя
+        // localStorage.removeItem('token'); // Не удаляем токен при ошибке профиля
+        // setToken(null);
+        // setUser(null);
       }
     } catch (error) {
       console.error('Failed to fetch user:', error);
-      localStorage.removeItem('token');
-      setToken(null);
-      setUser(null);
+      // При сетевой ошибке тоже оставляем базового пользователя
+      // localStorage.removeItem('token');
+      // setToken(null);
+      // setUser(null);
     } finally {
       setIsLoading(false);
     }
@@ -75,7 +85,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: JSON.stringify({ email, password })
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('Failed to parse login response:', error);
+      throw new Error('Ошибка сервера: неправильный ответ');
+    }
 
     if (!response.ok) {
       throw new Error(data.error || 'Ошибка входа');
@@ -83,8 +99,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    // После входа получаем полный профиль
-    await fetchUser(data.token);
+    setUser(data.user); // Сначала устанавливаем базовую информацию о пользователе
+    // После небольшой задержки получаем полный профиль
+    setTimeout(() => fetchUser(data.token), 500);
   };
 
   const register = async (email: string, password: string, name: string) => {
@@ -96,7 +113,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       body: JSON.stringify({ email, password, name })
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('Failed to parse registration response:', error);
+      throw new Error('Ошибка сервера: неправильный ответ');
+    }
 
     if (!response.ok) {
       throw new Error(data.error || 'Ошибка регистрации');
@@ -104,8 +127,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    // После регистрации получаем полный профиль
-    await fetchUser(data.token);
+    setUser(data.user); // Сначала устанавливаем базовую информацию о пользователе
+    // После небольшой задержки получаем полный профиль
+    setTimeout(() => fetchUser(data.token), 500);
   };
 
   const logout = async () => {
