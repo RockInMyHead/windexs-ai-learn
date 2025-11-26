@@ -128,8 +128,8 @@ const Chat = () => {
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
-      <main className="container mx-auto px-4 pt-24 pb-16">
-        <div className="max-w-4xl mx-auto h-[calc(100vh-12rem)] flex flex-col">
+      <main className="container mx-auto px-4 pt-24 pb-4">
+        <div className="max-w-4xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
           <Card className="flex-1 flex flex-col overflow-hidden">
             <div ref={scrollAreaRef} className="flex-1 overflow-y-auto p-6 space-y-4">
               {messages.map((message, index) => (
