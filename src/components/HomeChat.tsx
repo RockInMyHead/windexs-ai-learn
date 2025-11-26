@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import MathRenderer from "@/components/MathRenderer";
 
 interface Message {
   role: 'user' | 'ai';
@@ -145,7 +146,7 @@ const HomeChat = () => {
                           <span className="text-xs font-medium text-primary">Юлия</span>
                         </div>
                       )}
-                      <div className="whitespace-pre-wrap">{message.content}</div>
+                      <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
                       <div className={`text-xs mt-2 ${
                         message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
                       }`}>

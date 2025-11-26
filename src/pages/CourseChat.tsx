@@ -10,6 +10,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import MathRenderer from "@/components/MathRenderer";
 
 interface ChatMessage {
   id: string;
@@ -304,7 +305,7 @@ const CourseChat = () => {
     h2: ({ children }: any) => <h2 className="text-lg font-bold mb-2 text-primary">{children}</h2>,
     h3: ({ children }: any) => <h3 className="text-base font-semibold mb-2 text-primary">{children}</h3>,
     h4: ({ children }: any) => <h4 className="text-sm font-semibold mb-1 text-primary">{children}</h4>,
-    p: ({ children }: any) => <p className="mb-2 leading-relaxed last:mb-0">{children}</p>,
+    p: ({ children }: any) => <MathRenderer className="mb-2 leading-relaxed last:mb-0">{children}</MathRenderer>,
     strong: ({ children }: any) => <strong className="font-semibold text-foreground">{children}</strong>,
     em: ({ children }: any) => <em className="italic text-muted-foreground">{children}</em>,
     ul: ({ children }: any) => <ul className="ml-4 mb-3 space-y-1 list-disc list-inside marker:text-primary">{children}</ul>,

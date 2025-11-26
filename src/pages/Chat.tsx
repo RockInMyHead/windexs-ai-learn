@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import MathRenderer from "@/components/MathRenderer";
 import { useState, useRef, useEffect } from "react";
 
 interface Message {
@@ -218,7 +219,7 @@ const Chat = () => {
                         <span className="text-xs font-medium text-primary">Юлия</span>
                       </div>
                     )}
-                    <div className="whitespace-pre-wrap">{message.content}</div>
+                      <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
                     <div className={`text-xs mt-2 ${
                       message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
                     }`}>
