@@ -122,8 +122,8 @@ const HomeChat = () => {
           </CardHeader>
 
           <CardContent className="flex-1 flex flex-col p-0">
-            <ScrollArea ref={scrollAreaRef} className="flex-1 px-6">
-              <div className="space-y-4 py-4">
+            <ScrollArea ref={scrollAreaRef} className="flex-1 px-6 max-h-[400px] overflow-hidden">
+              <div className="space-y-4 py-4 min-h-0">
                 {messages.map((message, index) => (
                   <div
                     key={index}
