@@ -107,8 +107,9 @@ const Library = () => {
               {courses.map((course, index) => (
                 <Card
                   key={course.id}
-                  className="hover:shadow-lg transition-all duration-300 animate-fade-in"
+                  className="hover:shadow-lg transition-all duration-300 animate-fade-in cursor-pointer"
                   style={{ animationDelay: `${index * 100}ms` }}
+                  onClick={() => navigate(`/learning-mode/${course.subject_id}-${course.grade ? `grade-${course.grade}` : `goal-${course.goal}`}`)}
                 >
                   <CardHeader>
                     <div className="flex items-start gap-3 mb-2">
@@ -119,7 +120,12 @@ const Library = () => {
                       </div>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="text-muted-foreground hover:text-destructive"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </AlertDialogTrigger>
