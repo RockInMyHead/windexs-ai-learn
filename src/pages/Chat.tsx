@@ -1,8 +1,9 @@
 import Navigation from "@/components/Navigation";
-import { Send, Sparkles, Loader2, Paperclip, Image } from "lucide-react";
+import { Send, Sparkles, Loader2, Paperclip, Image, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useState, useRef, useEffect } from "react";
 
 interface Message {
@@ -23,8 +24,12 @@ const Chat = () => {
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [stream, setStream] = useState<MediaStream | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -35,6 +40,15 @@ const Chat = () => {
       }
     }
   }, [messages]);
+
+  // Cleanup camera stream on unmount
+  useEffect(() => {
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [stream]);
 
   const sendMessage = async (messageText: string) => {
     if ((!messageText.trim() && !selectedFile) || isLoading) return;
@@ -123,6 +137,57 @@ const Chat = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  const openCamera = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' } // Использовать заднюю камеру на мобильных
+      });
+      setStream(mediaStream);
+      setIsCameraOpen(true);
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = mediaStream;
+      }
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      alert('Не удалось получить доступ к камере. Проверьте разрешения.');
+    }
+  };
+
+  const closeCamera = () => {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      setStream(null);
+    }
+    setIsCameraOpen(false);
+  };
+
+  const takePhoto = () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (!context) return;
+
+    // Устанавливаем размер canvas равным видео
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    // Рисуем кадр с видео на canvas
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Конвертируем canvas в blob
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const file = new File([blob], `photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+        setSelectedFile(file);
+        closeCamera();
+      }
+    }, 'image/jpeg', 0.8);
   };
 
   return (
@@ -231,6 +296,19 @@ const Chat = () => {
                   <Paperclip className="w-4 h-4" />
                 </Button>
 
+                {/* Camera button */}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={openCamera}
+                  disabled={isLoading}
+                  className="shrink-0"
+                  title="Сфотографировать"
+                >
+                  <Camera className="w-4 h-4" />
+                </Button>
+
                 <Input
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
@@ -256,6 +334,38 @@ const Chat = () => {
           </Card>
         </div>
       </main>
+
+      {/* Camera Modal */}
+      <Dialog open={isCameraOpen} onOpenChange={setIsCameraOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Сфотографировать</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="relative bg-black rounded-lg overflow-hidden">
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-64 object-cover"
+              />
+              <canvas ref={canvasRef} className="hidden" />
+            </div>
+
+            <div className="flex justify-center gap-3">
+              <Button onClick={takePhoto} className="flex-1">
+                <Camera className="w-4 h-4 mr-2" />
+                Сфотографировать
+              </Button>
+              <Button variant="outline" onClick={closeCamera}>
+                Отмена
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
