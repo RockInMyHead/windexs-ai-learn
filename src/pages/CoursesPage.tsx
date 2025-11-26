@@ -90,8 +90,9 @@ const CoursesPage = () => {
             {subjects.map((subject, index) => (
               <Card
                 key={subject.id}
-                className="hover:shadow-xl transition-all duration-300 hover:scale-[1.02] animate-fade-in"
+                className="hover:shadow-xl transition-all duration-300 hover:scale-[1.02] animate-fade-in cursor-pointer"
                 style={{ animationDelay: `${index * 50}ms` }}
+                onClick={() => navigate(`/course-start/${subject.id}`)}
               >
                 <CardHeader>
                   <div className="text-4xl mb-3">{subject.icon}</div>
@@ -105,9 +106,12 @@ const CoursesPage = () => {
                     <span className="text-muted-foreground">Классы:</span>
                     <Badge variant="outline">{subject.grades}</Badge>
                   </div>
-                  <Button 
-                    className="w-full" 
-                    onClick={() => navigate(`/course-start/${subject.id}`)}
+                  <Button
+                    className="w-full"
+                    onClick={(e) => {
+                      e.stopPropagation(); // Prevent card click when button is clicked
+                      navigate(`/course-start/${subject.id}`);
+                    }}
                   >
                     Начать обучение
                   </Button>
