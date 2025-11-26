@@ -16,10 +16,7 @@ const CTA = () => {
           
           <div className="relative z-10">
             <h2 className="text-4xl md:text-6xl font-bold mb-6 leading-tight">
-              Готовы начать обучение <br />
-              <span className="bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent">
-                с персональным AI?
-              </span>
+              Готовы начать обучение
             </h2>
             
             <p className="text-xl md:text-2xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed">
