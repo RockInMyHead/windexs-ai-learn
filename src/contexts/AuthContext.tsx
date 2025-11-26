@@ -41,23 +41,26 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const fetchUser = async (authToken: string) => {
     try {
-      const response = await fetch(`${API_URL}/auth/me`, {
+      const response = await fetch(`${API_URL}/profile`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
         }
       });
-      
+
       if (response.ok) {
         const data = await response.json();
-        setUser(data.user);
+        setUser(data.profile);
       } else {
+        console.error('Failed to fetch user profile:', response.status, response.statusText);
         localStorage.removeItem('token');
         setToken(null);
+        setUser(null);
       }
     } catch (error) {
       console.error('Failed to fetch user:', error);
       localStorage.removeItem('token');
       setToken(null);
+      setUser(null);
     } finally {
       setIsLoading(false);
     }
@@ -80,7 +83,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    setUser(data.user);
+    // После входа получаем полный профиль
+    await fetchUser(data.token);
   };
 
   const register = async (email: string, password: string, name: string) => {
@@ -100,7 +104,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     localStorage.setItem('token', data.token);
     setToken(data.token);
-    setUser(data.user);
+    // После регистрации получаем полный профиль
+    await fetchUser(data.token);
   };
 
   const logout = async () => {

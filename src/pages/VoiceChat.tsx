@@ -170,7 +170,7 @@ const VoiceChat = () => {
       if (isRecording) {
         console.log('🔄 Перезапуск после неожиданной остановки...');
         setTimeout(() => {
-          startSpeechRecognition();
+        startSpeechRecognition();
         }, 1000); // Longer delay for error recovery
       }
     };
