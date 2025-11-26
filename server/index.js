@@ -339,11 +339,16 @@ app.get('/api/courses', authenticateToken, (req, res) => {
     const userId = req.user.userId;
     const courses = db.prepare(`
       SELECT id, subject_id, subject_name, grade, goal, goal_name, icon, progress, next_lesson, created_at
-      FROM user_courses 
+      FROM user_courses
       WHERE user_id = ?
       ORDER BY updated_at DESC
     `).all(userId);
-    
+
+    console.log(`📚 Получение курсов для пользователя ${userId}: найдено ${courses.length} курсов`);
+    courses.forEach(course => {
+      console.log(`  - ${course.id}: ${course.subject_name} (${course.goal_name || 'без цели'})`);
+    });
+
     res.json({ courses });
   } catch (error) {
     console.error('Get courses error:', error);
@@ -777,6 +782,7 @@ function ensureCourseExists(userId, courseId) {
   if (firstPart === 'ege' || firstPart === 'oge') {
     subjectId = parts[1]; // e.g. "russian", "math"
     goal = firstPart; // e.g. "ege" or "oge"
+    console.log(`📚 Экзаменационный курс: subjectId=${subjectId}, goal=${goal}, courseId=${courseId}`);
   } else {
     // Regular courses (russian-grade-5, english-goal-travel, etc.)
     subjectId = parts[0];
@@ -828,17 +834,26 @@ function ensureCourseExists(userId, courseId) {
 
   // Set goalName for display purposes
   let goalName = null;
-  if (optionType === 'goal') {
+  if (goal === 'ege') {
+    goalName = 'Подготовка к ЕГЭ';
+  } else if (goal === 'oge') {
+    goalName = 'Подготовка к ОГЭ';
+  } else if (optionType === 'goal') {
     goalName = goal; // goal is already set above
   }
 
   // Create the course
   const nextLesson = getFirstLesson(subjectId, grade, goal);
 
+  // Set appropriate icon for exam courses
+  const courseIcon = (goal === 'ege' || goal === 'oge') ? '🎓' : '📚';
+
+  console.log(`📚 Создание курса: id=${userCourseId}, subjectId=${subjectId}, subjectName=${subjectName}, grade=${grade}, goal=${goal}, goalName=${goalName}, icon=${courseIcon}`);
+
   db.prepare(`
     INSERT INTO user_courses (id, user_id, subject_id, subject_name, grade, goal, goal_name, icon, progress, next_lesson)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-  `).run(userCourseId, userId, subjectId, subjectName, grade, goal, goalName, '📚', nextLesson);
+  `).run(userCourseId, userId, subjectId, subjectName, grade, goal, goalName, courseIcon, nextLesson);
 
   console.log(`📚 Автоматически создан курс: ${subjectName} для пользователя ${userId} (id: ${userCourseId})`);
   return userCourseId;
