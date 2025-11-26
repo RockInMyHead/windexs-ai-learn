@@ -966,10 +966,10 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
         console.log('🎤 Voice chat запрос в OpenAI (без стриминга)...');
         console.log('📝 Сообщения для voice chat:', JSON.stringify(messages, null, 2));
         const completion = await openai.chat.completions.create({
-          model: 'gpt-4o-mini',
+          model: 'gpt-5.1',
           messages,
           temperature,
-          max_tokens: 800,
+          max_completion_tokens: 800,
           stream: false
         });
 
@@ -1023,10 +1023,10 @@ app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
 
     try {
       const stream = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.1',
         messages,
         temperature,
-        max_tokens: 2000,
+        max_completion_tokens: 2000,
         stream: true
       });
       console.log('✅ OpenAI API ответил успешно');
@@ -1273,10 +1273,10 @@ app.post('/api/chat/general', async (req, res) => {
 
     console.log('🚀 Отправка запроса в OpenAI API...');
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.1',
       messages,
       temperature: 0.7,
-      max_tokens: 1000,
+      max_completion_tokens: 1000,
       stream: false
     });
 
