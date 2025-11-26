@@ -60,9 +60,27 @@ const VoiceChat = () => {
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
     if (currentAudioRef.current) {
-      console.log('🛑 Прерываю текущую озвучку...');
-      currentAudioRef.current.pause();
-      currentAudioRef.current.currentTime = 0;
+      console.log('🛑 Агрессивно прерываю текущую озвучку...');
+
+      // Multiple ways to ensure audio stops
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+        currentAudioRef.current.volume = 0;
+        currentAudioRef.current.muted = true;
+
+        // Remove all event listeners
+        currentAudioRef.current.onplay = null;
+        currentAudioRef.current.onended = null;
+        currentAudioRef.current.onerror = null;
+
+        // Force garbage collection hint
+        currentAudioRef.current.src = '';
+        currentAudioRef.current.load();
+      } catch (error) {
+        console.log('⚠️ Ошибка при прерывании audio:', error);
+      }
+
       currentAudioRef.current = null;
       setIsSpeaking(false);
     }
@@ -119,6 +137,9 @@ const VoiceChat = () => {
 
           // Send to LLM and get response (include previous context if interrupted)
           const llmResponse = await sendToLLM(transcript);
+
+          // Small delay to ensure previous TTS is fully stopped
+          await new Promise(resolve => setTimeout(resolve, 100));
 
           // Speak the response (recognition continues automatically in continuous mode)
           await speakText(llmResponse);
@@ -458,6 +479,12 @@ const VoiceChat = () => {
       // Stop any currently playing audio
       stopCurrentTTS();
 
+      // Double-check that audio is stopped
+      if (currentAudioRef.current) {
+        console.log('⚠️ Audio все еще существует после остановки, принудительно очищаем...');
+        currentAudioRef.current = null;
+      }
+
       // Create audio element and play
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
@@ -487,6 +514,9 @@ const VoiceChat = () => {
           variant: "destructive"
         });
       };
+
+      // Small delay to ensure clean start
+      await new Promise(resolve => setTimeout(resolve, 50));
 
       // Start playing
       await audio.play();
