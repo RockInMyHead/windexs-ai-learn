@@ -710,7 +710,7 @@ function ensureCourseExists(userId, courseId) {
   if (optionType === 'grade') {
     grade = parts[2];
   } else if (optionType === 'goal') {
-    goal = optionType;
+    goal = parts.slice(2).join('-'); // e.g. "travel", "communication", "study"
   }
 
   // Check if course with same subject, grade/goal already exists for this user
@@ -731,12 +731,6 @@ function ensureCourseExists(userId, courseId) {
   if (userSpecificCourse) {
     return userCourseId;
   }
-
-  // Parse courseId to create course automatically (format: subject-grade-goal or subject-grade)
-  const parts = courseId.split('-');
-  const subjectId = parts[0];
-  const optionType = parts[1];
-
   // Map subject IDs to names
   const subjectNames = {
     russian: 'Русский язык',
@@ -753,15 +747,11 @@ function ensureCourseExists(userId, courseId) {
   };
 
   const subjectName = subjectNames[subjectId] || subjectId;
-  let grade = null;
-  let goal = null;
-  let goalName = null;
 
-  if (optionType === 'grade') {
-    grade = parts[2];
-  } else if (optionType === 'goal') {
-    goal = optionType;
-    goalName = parts.slice(2).join('-');
+  // Set goalName for display purposes
+  let goalName = null;
+  if (optionType === 'goal') {
+    goalName = goal; // goal is already set above
   }
 
   // Create the course
