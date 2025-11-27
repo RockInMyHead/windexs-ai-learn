@@ -258,6 +258,109 @@ const CourseChat = () => {
     }
   };
 
+  const sendVoiceMessage = async (audioFile: File) => {
+    setIsSending(true);
+
+    // Add user message immediately
+    const userMessage: ChatMessage = {
+      id: `temp-${Date.now()}`,
+      role: 'user',
+      content: '🎤 Голосовое сообщение',
+      created_at: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, userMessage]);
+
+    // Add placeholder for AI response
+    const aiPlaceholder: ChatMessage = {
+      id: `ai-${Date.now()}`,
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      isStreaming: true
+    };
+    setMessages(prev => [...prev, aiPlaceholder]);
+
+    try {
+      abortControllerRef.current = new AbortController();
+
+      const formData = new FormData();
+      formData.append('audio', audioFile);
+      formData.append('messageType', 'voice');
+
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData,
+        signal: abortControllerRef.current.signal
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to send voice message');
+      }
+
+      // Handle streaming response
+      const contentType = response.headers.get('content-type');
+
+      if (contentType && contentType.includes('text/plain')) {
+        // Streaming response
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error('No response reader');
+
+        let accumulatedContent = '';
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          accumulatedContent += chunk;
+
+          // Update the streaming message
+          setMessages(prev => prev.map(msg =>
+            msg.id === aiPlaceholder.id
+              ? { ...msg, content: accumulatedContent, isStreaming: false }
+              : msg
+          ));
+        }
+      } else {
+        // Regular JSON response
+        const data = await response.json();
+        setMessages(prev => prev.map(msg =>
+          msg.id === aiPlaceholder.id
+            ? { ...msg, content: data.message, isStreaming: false }
+            : msg
+        ));
+
+        // Save to local storage
+        if (data.messageId) {
+          localStorage.setItem(`message_${data.messageId}`, JSON.stringify({
+            id: data.messageId,
+            content: data.message,
+            timestamp: new Date().toISOString()
+          }));
+        }
+      }
+
+    } catch (error) {
+      console.error('Send voice message error:', error);
+      // Remove the placeholder and show error
+      setMessages(prev => prev.filter(msg => msg.id !== aiPlaceholder.id));
+
+      const errorMessage: ChatMessage = {
+        id: `error-${Date.now()}`,
+        role: 'assistant',
+        content: 'Извините, не удалось отправить голосовое сообщение. Попробуйте еще раз.',
+        created_at: new Date().toISOString()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const removeFile = (index: number) => {
     setSelectedFiles(prev => prev.filter((_, i) => i !== index));
   };
@@ -279,7 +382,7 @@ const CourseChat = () => {
         }
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
 
         // Create a file-like object that's compatible with all browsers
@@ -289,7 +392,8 @@ const CourseChat = () => {
           webkitRelativePath: ''
         }) as File;
 
-        setSelectedFiles(prev => [...prev, audioFile]);
+        // Send voice message immediately after recording
+        await sendVoiceMessage(audioFile);
         stream.getTracks().forEach(track => track.stop());
       };
 
