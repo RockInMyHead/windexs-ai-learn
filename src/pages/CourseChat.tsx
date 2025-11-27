@@ -79,10 +79,31 @@ const CourseChat = () => {
 
       if (response.ok) {
         const data = await response.json();
-        // Filter out voice messages from text chat (they belong to VoiceChat interface only)
-        const textMessages = data.messages.filter((m: any) =>
-          m.content !== '🎤 Голосовое сообщение' && m.message_type !== 'voice'
-        );
+
+        // Filter out voice-related messages from text chat (they belong to VoiceChat interface only)
+        let textMessages: any[] = [];
+        let skipNextAssistant = false;
+
+        // Process messages in chronological order (newest first)
+        for (let i = data.messages.length - 1; i >= 0; i--) {
+          const message = data.messages[i];
+
+          // Skip voice messages from users
+          if (message.content === '🎤 Голосовое сообщение' || message.message_type === 'voice') {
+            skipNextAssistant = true; // Next assistant message should also be skipped
+            continue;
+          }
+
+          // Skip assistant messages that follow voice messages
+          if (message.role === 'assistant' && skipNextAssistant) {
+            skipNextAssistant = false; // Reset flag after skipping one assistant message
+            continue;
+          }
+
+          // Include this message
+          textMessages.unshift(message);
+        }
+
         setMessages(textMessages.map((m: any) => ({
           id: m.id,
           role: m.role === 'assistant' ? 'assistant' : 'user',
