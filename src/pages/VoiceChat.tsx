@@ -53,10 +53,16 @@ const VoiceChat = () => {
   const [isMicEnabled, setIsMicEnabled] = useState(true);
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
 
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
+  
+  // Fallback recording refs (for browsers without Web Speech API)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
@@ -88,6 +94,129 @@ const VoiceChat = () => {
   setIsSpeaking(false);
 }, []);
 
+  // Check if Web Speech API is available
+  const isWebSpeechAvailable = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition ||
+      (window as any).webkitSpeechRecognition ||
+      (window as any).mozSpeechRecognition;
+    return !!SpeechRecognition;
+  }, []);
+
+  // Transcribe audio using OpenAI Whisper API (fallback for browsers without Web Speech API)
+  const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
+    try {
+      console.log('🎤 Отправка аудио на транскрибацию через OpenAI Whisper...');
+      setIsTranscribing(true);
+
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
+
+      const response = await fetch('https://teacher.windexs.ru/api/transcribe', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Transcription failed');
+      }
+
+      const data = await response.json();
+      console.log('✅ Транскрибация завершена:', data.text);
+      return data.text || null;
+    } catch (error) {
+      console.error('❌ Ошибка транскрибации:', error);
+      toast({
+        title: "Ошибка распознавания",
+        description: "Не удалось распознать речь. Попробуйте еще раз.",
+        variant: "destructive"
+      });
+      return null;
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [token, toast]);
+
+  // Start fallback recording (MediaRecorder + OpenAI Whisper)
+  const startFallbackRecording = useCallback(async () => {
+    try {
+      console.log('🎤 Запуск fallback записи (MediaRecorder)...');
+      
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        toast({
+          title: "Микрофон недоступен",
+          description: "Ваш браузер не поддерживает запись аудио.",
+          variant: "destructive"
+        });
+        return false;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+      });
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.start(100); // Collect data every 100ms
+      console.log('✅ Fallback запись начата');
+      return true;
+    } catch (error) {
+      console.error('❌ Ошибка запуска fallback записи:', error);
+      toast({
+        title: "Ошибка микрофона",
+        description: "Не удалось получить доступ к микрофону.",
+        variant: "destructive"
+      });
+      return false;
+    }
+  }, [toast]);
+
+  // Stop fallback recording and transcribe
+  const stopFallbackRecording = useCallback(async () => {
+    return new Promise<string | null>((resolve) => {
+      if (!mediaRecorderRef.current) {
+        resolve(null);
+        return;
+      }
+
+      mediaRecorderRef.current.onstop = async () => {
+        console.log('🛑 Fallback запись остановлена, chunks:', audioChunksRef.current.length);
+        
+        // Stop all tracks
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
+        }
+
+        if (audioChunksRef.current.length === 0) {
+          resolve(null);
+          return;
+        }
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        audioChunksRef.current = [];
+
+        // Transcribe using OpenAI
+        const text = await transcribeWithOpenAI(audioBlob);
+        resolve(text);
+      };
+
+      mediaRecorderRef.current.stop();
+    });
+  }, [transcribeWithOpenAI]);
+
   // Initialize Web Speech API
   const initializeSpeechRecognition = useCallback(() => {
     // Check if Web Speech API is supported (Chrome, Safari, Firefox, Edge)
@@ -96,12 +225,8 @@ const VoiceChat = () => {
       (window as any).mozSpeechRecognition; // Firefox support
 
     if (!SpeechRecognition) {
-      console.error('❌ Web Speech API не поддерживается в этом браузере');
-      toast({
-        title: "Браузер не поддерживается",
-        description: "Ваш браузер не поддерживает распознавание речи. Попробуйте Chrome, Firefox или Safari.",
-        variant: "destructive"
-      });
+      console.log('⚠️ Web Speech API не поддерживается, будет использоваться OpenAI Whisper');
+      setUseFallbackTranscription(true);
       return null;
     }
 
@@ -240,11 +365,34 @@ const VoiceChat = () => {
       setIsRecording(false);
       setIsTranscribing(false);
 
-      if (speechRecognitionRef.current) {
-        try {
-          speechRecognitionRef.current.stop();
-        } catch (error) {
-          console.log('Speech recognition already stopped');
+      // Check if using fallback (OpenAI Whisper) mode
+      if (useFallbackTranscription || !isWebSpeechAvailable()) {
+        // Stop fallback recording and transcribe
+        const transcript = await stopFallbackRecording();
+        
+        if (transcript && transcript.trim()) {
+          console.log('🎯 Fallback транскрипция:', transcript);
+          
+          // Stop any current TTS
+          stopCurrentTTS();
+          
+          // Send to LLM
+          try {
+            const llmResponse = await sendToLLM(transcript);
+            await speakText(llmResponse);
+            console.log('✅ Ответ озвучен');
+          } catch (error) {
+            console.error('❌ Ошибка обработки ответа:', error);
+          }
+        }
+      } else {
+        // Web Speech API mode
+        if (speechRecognitionRef.current) {
+          try {
+            speechRecognitionRef.current.stop();
+          } catch (error) {
+            console.log('Speech recognition already stopped');
+          }
         }
       }
     } else {
@@ -260,12 +408,33 @@ const VoiceChat = () => {
 
       console.log('🎤 Запуск записи...');
 
+      // Check if Web Speech API is available
+      if (!isWebSpeechAvailable()) {
+        console.log('🔄 Используется fallback режим (OpenAI Whisper)');
+        setUseFallbackTranscription(true);
+        
+        const started = await startFallbackRecording();
+        if (started) {
+          setIsRecording(true);
+          console.log('🎤 Fallback запись начата');
+        }
+        return;
+      }
+
       try {
         // Initialize Web Speech API if not already done
         if (!speechRecognitionRef.current) {
           const recognition = initializeSpeechRecognition();
           if (!recognition) {
-            console.error('❌ Не удалось инициализировать Web Speech API');
+            // Fallback to OpenAI Whisper if Web Speech API fails
+            console.log('🔄 Переключение на fallback режим (OpenAI Whisper)');
+            setUseFallbackTranscription(true);
+            
+            const started = await startFallbackRecording();
+            if (started) {
+              setIsRecording(true);
+              console.log('🎤 Fallback запись начата');
+            }
             return;
           }
         }
@@ -278,9 +447,18 @@ const VoiceChat = () => {
         console.log('🎤 Запись начата');
       } catch (error) {
         console.error('❌ Ошибка запуска записи:', error);
+        
+        // Try fallback on error
+        console.log('🔄 Ошибка Web Speech API, переключение на fallback');
+        setUseFallbackTranscription(true);
+        
+        const started = await startFallbackRecording();
+        if (started) {
+          setIsRecording(true);
+        }
       }
     }
-  }, [isRecording, initializeSpeechRecognition, startSpeechRecognition, isMicEnabled, toast]);
+  }, [isRecording, initializeSpeechRecognition, startSpeechRecognition, isMicEnabled, toast, useFallbackTranscription, isWebSpeechAvailable, startFallbackRecording, stopFallbackRecording, stopCurrentTTS, sendToLLM, speakText]);
 
   // Toggle microphone
   const handleToggleMic = useCallback(() => {
@@ -292,12 +470,27 @@ const VoiceChat = () => {
         // Stop recording if it's active
         setIsRecording(false);
         setIsTranscribing(false);
+        
+        // Stop Web Speech API if active
         if (speechRecognitionRef.current) {
           try {
             speechRecognitionRef.current.stop();
           } catch (error) {
             console.log('Speech recognition already stopped');
           }
+        }
+        
+        // Stop fallback recording if active
+        if (mediaRecorderRef.current) {
+          try {
+            mediaRecorderRef.current.stop();
+          } catch (error) {
+            console.log('MediaRecorder already stopped');
+          }
+        }
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
         }
       }
       toast({
@@ -639,12 +832,25 @@ const VoiceChat = () => {
   useEffect(() => {
     return () => {
       console.log('🧹 Очистка при размонтировании');
+      // Stop Web Speech API
       if (speechRecognitionRef.current) {
         try {
           speechRecognitionRef.current.stop();
         } catch (error) {
           // Already stopped
         }
+      }
+      // Stop fallback MediaRecorder
+      if (mediaRecorderRef.current) {
+        try {
+          mediaRecorderRef.current.stop();
+        } catch (error) {
+          // Already stopped
+        }
+      }
+      // Stop media stream
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
       }
       // Stop current TTS
       stopCurrentTTS();
@@ -704,7 +910,7 @@ const VoiceChat = () => {
                   <div className="flex flex-wrap justify-center gap-2">
                     {isRecording && (
                       <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200 animate-pulse">
-                        🎤 Запись активна...
+                        🎤 {useFallbackTranscription ? 'Запись (OpenAI)...' : 'Запись активна...'}
                       </Badge>
                     )}
                     {isTranscribing && (
