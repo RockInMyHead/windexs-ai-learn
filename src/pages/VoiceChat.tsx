@@ -426,12 +426,30 @@ const VoiceChat = () => {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        let errorData = { error: 'Unknown error' };
+        try {
+          const text = await response.text();
+          if (text) {
+            errorData = JSON.parse(text);
+          }
+        } catch (parseError) {
+          console.error('❌ Ошибка парсинга ответа:', parseError);
+        }
         console.error('❌ Ответ сервера с ошибкой:', response.status, errorData);
         throw new Error(errorData.error || errorData.details || 'Failed to get LLM response');
       }
 
-      const data = await response.json();
+      // Parse response safely
+      let data;
+      try {
+        const text = await response.text();
+        console.log('📥 Сырой ответ сервера:', text.substring(0, 200));
+        data = JSON.parse(text);
+      } catch (parseError) {
+        console.error('❌ Ошибка парсинга JSON:', parseError);
+        throw new Error('Invalid JSON response from server');
+      }
+
       console.log('✅ LLM ответил:', data.message);
 
       return data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
