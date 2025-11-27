@@ -1220,15 +1220,76 @@ app.put('/api/homework/:homeworkId', authenticateToken, (req, res) => {
 // ==================== GENERAL AI CHAT API ====================
 
 // General AI chat (no course-specific, accessible to all users)
-app.post('/api/chat/general', async (req, res) => {
+// Get general chat history
+app.get('/api/chat/general/history', authenticateToken, (req, res) => {
+  try {
+    console.log('📚 Получение истории общего чата');
+    const userId = req.user.userId;
+
+    const messages = db.prepare(`
+      SELECT id, role, content, created_at, message_type
+      FROM chat_messages
+      WHERE user_id = ? AND course_id = 'general'
+      ORDER BY created_at ASC
+      LIMIT 50
+    `).all(userId);
+
+    console.log('✅ История общего чата получена, сообщений:', messages.length);
+    res.json({ messages });
+  } catch (error) {
+    console.error('❌ Ошибка получения истории общего чата:', error);
+    res.status(500).json({ error: 'Ошибка получения истории чата' });
+  }
+});
+
+app.post('/api/chat/general', authenticateToken, upload.single('audio'), async (req, res) => {
   try {
     console.log('🤖 Новый запрос к общему AI чату');
-    const { content, messageType = 'text' } = req.body;
+    console.log('👤 User ID:', req.user?.userId);
+    console.log('📋 Headers:', req.headers.authorization ? 'Token present' : 'No token');
 
-    if (!content || !content.trim()) {
-      console.log('❌ Контент пустой');
-      return res.status(400).json({ error: 'Сообщение не может быть пустым' });
+    let content, messageType = 'text';
+
+    // Handle voice messages (FormData)
+    if (req.file) {
+      console.log('🎤 Голосовое сообщение получено');
+      messageType = 'voice';
+
+      // Transcribe audio to text
+      if (!openai) {
+        console.error('OpenAI client not initialized');
+        return res.status(500).json({ error: 'OpenAI API недоступен' });
+      }
+
+      const audioBuffer = req.file.buffer;
+      console.log('🎵 Транскрибация аудио...');
+
+      const transcription = await openai.audio.transcriptions.create({
+        file: new File([audioBuffer], 'audio.webm', { type: 'audio/webm' }),
+        model: "whisper-1",
+        language: "ru"
+      });
+
+      content = transcription.text;
+      console.log('✅ Аудио транскрибировано:', content);
+
+      if (!content || !content.trim()) {
+        console.log('❌ Транскрибация пуста');
+        return res.status(400).json({ error: 'Не удалось распознать речь' });
+      }
+    } else {
+      // Handle text messages (JSON)
+      console.log('💬 Текстовое сообщение получено');
+      const bodyData = req.body;
+      content = bodyData.content || bodyData.text;
+
+      if (!content || !content.trim()) {
+        console.log('❌ Контент пустой');
+        return res.status(400).json({ error: 'Сообщение не может быть пустым' });
+      }
     }
+
+    const userId = req.user.userId;
 
     // Universal teacher prompt
     const systemPrompt = `Ты - Юлия, универсальный AI-учитель. Ты помогаешь людям изучать любые темы и предметы.
@@ -1289,6 +1350,30 @@ app.post('/api/chat/general', async (req, res) => {
     const tokensUsed = completion.usage?.total_tokens || 0;
 
     console.log('✅ AI ответил, токенов:', tokensUsed);
+
+    // Save messages to database (using 'general' as courseId for general chat)
+    try {
+      console.log('💾 Сохранение сообщений в базу данных...');
+
+      // Save user message
+      const userMessageId = uuidv4();
+      db.prepare(`
+        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
+        VALUES (?, ?, ?, 'user', ?, ?)
+      `).run(userMessageId, userId, 'general', content.trim(), messageType);
+
+      // Save AI response
+      const aiMessageId = uuidv4();
+      db.prepare(`
+        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
+        VALUES (?, ?, ?, 'assistant', ?, 'text')
+      `).run(aiMessageId, userId, 'general', fullResponse, tokensUsed);
+
+      console.log('✅ Сообщения сохранены в БД');
+    } catch (dbError) {
+      console.error('❌ Ошибка сохранения в БД:', dbError);
+      // Don't fail the request if DB save fails
+    }
 
     return res.json({
       message: fullResponse,
