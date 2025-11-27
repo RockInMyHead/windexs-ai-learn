@@ -1591,13 +1591,13 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     console.log('Sending to OpenAI TTS...');
     console.log('Text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
 
-    // Generate speech using OpenAI TTS (HD quality)
+    // Generate speech using OpenAI TTS (optimized for speed)
     const mp3 = await openai.audio.speech.create({
-      model: "tts-1-hd",  // HD качество для лучшего звучания
+      model: "tts-1",  // Стандартная модель для более быстрой генерации
       voice: voice, // Options: alloy, echo, fable, onyx, nova, shimmer
       input: text.trim(),
       response_format: "mp3",
-      speed: 0.8  // Немного медленнее для лучшего понимания
+      speed: 1.2  // Увеличена скорость для естественной речи
     });
 
     // Convert response to buffer
