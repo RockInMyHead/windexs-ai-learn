@@ -691,6 +691,12 @@ const VoiceChat = () => {
 
   // Send transcribed text to LLM with Julia's system prompt
   const sendToLLM = useCallback(async (userMessage: string): Promise<string> => {
+    // ПРОВЕРКА: Если сообщение слишком короткое, не отправляем на сервер
+    if (!userMessage || userMessage.trim().length < 5) {
+      console.log('⚠️ Сообщение слишком короткое, пропускаем отправку:', userMessage);
+      return 'Пожалуйста, скажи более полное сообщение. Что именно ты хочешь спросить или обсудить?';
+    }
+
     setIsGeneratingResponse(true);
 
     try {
@@ -801,7 +807,7 @@ const VoiceChat = () => {
 
       console.log('✅ LLM ответил:', data.message);
 
-      return data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+      return data.message || 'Пожалуйста, уточни свой вопрос. Что именно ты хочешь узнать или обсудить?';
 
     } catch (error) {
       console.error('❌ Ошибка LLM:', error);
