@@ -318,6 +318,8 @@ const VoiceChat = () => {
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
 
+        console.log('🎤 Interim результат:', interimTranscript, 'Confidence:', result[0].confidence, 'Length:', interimTranscript.length, 'TTS active:', isSpeaking, 'Has audio:', !!currentAudioRef.current);
+
         // СТРОГАЯ ПРОВЕРКА: если TTS активен или недавно закончился, проверяем ВСЕ распознавания на эхо
         if (interimTranscript.length > 2) {
           // Проверяем, не является ли распознанный текст эхом от TTS
@@ -326,9 +328,8 @@ const VoiceChat = () => {
             return; // Ignore echo - не прерываем TTS
           }
 
-
-          // Только если это НЕ эхо и уверенность очень высокая - прерываем
-          if (result[0].confidence > 0.95 && interimTranscript.length > 5) {
+          // Только если это НЕ эхо и уверенность достаточная - прерываем
+          if (result[0].confidence > 0.7 && interimTranscript.length > 3) {
             console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
             console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
             stopCurrentTTS();
