@@ -211,3 +211,37 @@ All colors MUST be HSL.
 .markdown-content a:hover {
   color: hsl(var(--primary) / 0.8);
 }
+
+/* Cross-browser compatibility fixes */
+
+/* backdrop-filter fallbacks for older browsers */
+@supports not (backdrop-filter: blur(12px)) {
+  .backdrop-blur-sm {
+    background: rgba(255, 255, 255, 0.9);
+  }
+
+  .backdrop-blur-lg {
+    background: rgba(255, 255, 255, 0.8);
+  }
+
+  .backdrop-blur-xl {
+    background: rgba(255, 255, 255, 0.7);
+  }
+}
+
+/* Dark mode fallbacks */
+@media (prefers-color-scheme: dark) {
+  @supports not (backdrop-filter: blur(12px)) {
+    .backdrop-blur-sm {
+      background: rgba(0, 0, 0, 0.8);
+    }
+
+    .backdrop-blur-lg {
+      background: rgba(0, 0, 0, 0.7);
+    }
+
+    .backdrop-blur-xl {
+      background: rgba(0, 0, 0, 0.6);
+    }
+  }
+}

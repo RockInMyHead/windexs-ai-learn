@@ -227,6 +227,12 @@ const Chat = () => {
   };
 
   const startRecording = async () => {
+    // Check if getUserMedia is supported
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Ваш браузер не поддерживает запись аудио. Попробуйте Chrome, Firefox или Safari.');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -295,6 +301,12 @@ const Chat = () => {
   };
 
   const openCamera = async () => {
+    // Check if getUserMedia is supported
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Ваш браузер не поддерживает камеру. Попробуйте Chrome, Firefox или Safari.');
+      return;
+    }
+
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment' } // Использовать заднюю камеру на мобильных

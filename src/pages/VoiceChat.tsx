@@ -37,6 +37,7 @@ declare global {
   interface Window {
     SpeechRecognition?: new () => SpeechRecognition;
     webkitSpeechRecognition?: new () => SpeechRecognition;
+    mozSpeechRecognition?: new () => SpeechRecognition; // Firefox support
   }
 }
 
@@ -89,11 +90,18 @@ const VoiceChat = () => {
 
   // Initialize Web Speech API
   const initializeSpeechRecognition = useCallback(() => {
-    // Check if Web Speech API is supported
-    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    // Check if Web Speech API is supported (Chrome, Safari, Firefox, Edge)
+    const SpeechRecognition = window.SpeechRecognition ||
+      (window as any).webkitSpeechRecognition ||
+      (window as any).mozSpeechRecognition; // Firefox support
 
     if (!SpeechRecognition) {
       console.error('❌ Web Speech API не поддерживается в этом браузере');
+      toast({
+        title: "Браузер не поддерживается",
+        description: "Ваш браузер не поддерживает распознавание речи. Попробуйте Chrome, Firefox или Safari.",
+        variant: "destructive"
+      });
       return null;
     }
 

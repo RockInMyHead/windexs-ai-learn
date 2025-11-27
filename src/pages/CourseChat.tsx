@@ -386,7 +386,13 @@ const CourseChat = () => {
   const startRecording = async () => {
     // Immediately stop any playing audio when user starts recording (interruption)
     stopCurrentAudio();
-    
+
+    // Check if getUserMedia is supported
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('Ваш браузер не поддерживает запись аудио. Попробуйте Chrome, Firefox или Safari.');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
