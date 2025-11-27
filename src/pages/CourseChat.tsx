@@ -286,12 +286,10 @@ const CourseChat = () => {
       const formData = new FormData();
       formData.append('audio', audioFile);
       formData.append('messageType', 'voice');
+      formData.append('token', token || '');
 
       const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
         body: formData,
         signal: abortControllerRef.current.signal
       });

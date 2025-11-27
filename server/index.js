@@ -865,13 +865,32 @@ function ensureCourseExists(userId, courseId) {
 }
 
 // Send message and get AI response (streaming)
-app.post('/api/chat/:courseId/message', upload.single('audio'), authenticateToken, async (req, res) => {
+app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res) => {
   try {
     console.log('📨 Новый запрос к /api/chat/:courseId/message');
-    console.log('👤 User ID:', req.user?.userId);
+
+    // Extract token from form data or headers
+    let token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
+    console.log('🔑 Token:', token ? 'present' : 'missing');
+
+    if (!token) {
+      console.log('❌ Токен не найден');
+      return res.status(401).json({ error: 'Токен не найден' });
+    }
+
+    // Verify token manually
+    let userId;
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      userId = decoded.userId;
+      console.log('👤 User ID:', userId);
+    } catch (tokenError) {
+      console.log('❌ Недействительный токен');
+      return res.status(401).json({ error: 'Недействительный токен' });
+    }
+
     console.log('📋 Course ID:', req.params.courseId);
 
-    const userId = req.user.userId;
     const { courseId: requestedCourseId } = req.params;
 
     let content, messageType = 'text';
