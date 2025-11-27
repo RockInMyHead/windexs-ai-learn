@@ -407,7 +407,7 @@ const VoiceChat = () => {
 
       // ВАЖНО: Во время активного TTS или сразу после окончания проверяем ВСЕ распознавания на эхо
       const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
-      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 20000 && timeSinceTTSEnd >= 0;
+      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 8000 && timeSinceTTSEnd >= 0; // Уменьшаем до 8 секунд
 
       if (!result.isFinal && (isSpeaking || currentAudioRef.current || isRecentlyAfterTTS)) {
         const interimTranscript = result[0].transcript.trim();
@@ -420,12 +420,12 @@ const VoiceChat = () => {
             return; // Ignore echo - не прерываем TTS
           }
 
-          // Дополнительная агрессивная проверка для недавно закончившегося TTS
-          if (isRecentlyAfterTTS && currentTTSTextRef.current) {
+          // Дополнительная проверка для недавно закончившегося TTS - только явное эхо
+          if (isRecentlyAfterTTS && currentTTSTextRef.current && timeSinceTTSEnd < 3000) { // Только первые 3 секунды
             const normalizedTranscript = interimTranscript.toLowerCase().trim();
             const ttsText = currentTTSTextRef.current.toLowerCase();
 
-            // Проверяем совпадение слов
+            // Проверяем только точное совпадение или очень высокое совпадение слов
             const transcriptWords = normalizedTranscript.split(/\s+/).filter(word => word.length > 2);
             const ttsWords = ttsText.split(/\s+/).filter(word => word.length > 2);
             const matchingWords = transcriptWords.filter(word =>
@@ -433,9 +433,9 @@ const VoiceChat = () => {
             ).length;
             const matchRatio = transcriptWords.length > 0 ? matchingWords / transcriptWords.length : 0;
 
-            // Если совпадает много слов или точное совпадение - блокируем
-            if (matchRatio > 0.5 || ttsText.includes(normalizedTranscript)) {
-              console.log('🔇 Пропускаем эхо TTS (interim, пост-TTS, агрессивная проверка):', interimTranscript);
+            // Блокируем только явное эхо: >80% совпадения или точное совпадение
+            if (matchRatio > 0.8 || ttsText.includes(normalizedTranscript)) {
+              console.log('🔇 Пропускаем эхо TTS (interim, пост-TTS, первые 3 секунды):', interimTranscript);
               return;
             }
           }
@@ -483,12 +483,12 @@ const VoiceChat = () => {
         if (transcriptToProcess) {
           // 100% ЗАЩИТА ОТ ЭХА TTS: проверяем ВСЕ финальные результаты на эхо
           if (currentTTSTextRef.current) {
-            const normalizedTranscript = transcript.toLowerCase().trim();
+            const normalizedTranscript = transcriptToProcess.toLowerCase().trim();
             const ttsText = currentTTSTextRef.current.toLowerCase();
             const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
 
-            // Расширенная проверка: до 30 секунд после окончания TTS
-            if (timeSinceTTSEnd < 30000 && timeSinceTTSEnd >= 0) {
+            // Расширенная проверка: до 15 секунд после окончания TTS
+            if (timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0) {
               // Анализ совпадения слов - самая надежная проверка
               const transcriptWords = normalizedTranscript.split(/\s+/).filter(word => word.length > 2);
               const ttsWords = ttsText.split(/\s+/).filter(word => word.length > 2);
@@ -1090,12 +1090,12 @@ const VoiceChat = () => {
         // НЕ очищаем TTS текст сразу - оставляем для пост-TTS обнаружения эха
         // clearTTSState() будет вызван через таймаут
 
-        // Очищаем состояние TTS через 15 секунд для пост-TTS обнаружения эха
+        // Очищаем состояние TTS через 12 секунд для пост-TTS обнаружения эха
         setTimeout(() => {
           if (!isSpeaking) { // Проверяем, что TTS не начался снова
             clearTTSState();
           }
-        }, 15000);
+        }, 12000);
 
         // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
         // Добавляем небольшую задержку чтобы избежать захвата остатков TTS аудио
