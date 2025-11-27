@@ -225,8 +225,21 @@ const VoiceChat = () => {
     if (rms > 30) { // Adjustable threshold
       console.log('🗣️ Detected user speech via audio monitoring, interrupting TTS...');
       console.log('📊 Audio level:', rms.toFixed(2));
+
+      // Очистить накопленный текст перед прерыванием
+      cleanTranscriptRef.current = '';
+      console.log('🧹 Очищен накопленный текст при прерывании TTS через audio monitoring');
+
       stopCurrentTTS();
       clearTTSState();
+
+      // Перезапустить распознавание речи через короткую задержку
+      setTimeout(() => {
+        if (!isRecording && isMicEnabled) {
+          console.log('🎤 Перезапуск распознавания речи после прерывания TTS');
+          startSpeechRecognition();
+        }
+      }, 500); // Задержка чтобы TTS полностью остановился
     }
   }, [isSpeaking]);
 
@@ -384,6 +397,9 @@ const VoiceChat = () => {
   }
 
   setIsSpeaking(false);
+  // Очистить накопленный текст при прерывании TTS
+  cleanTranscriptRef.current = '';
+  console.log('🧹 Очищен накопленный текст при прерывании TTS');
   // Stop audio monitoring when TTS is interrupted
   stopAudioMonitoring();
 }, [stopAudioMonitoring]);
