@@ -70,6 +70,7 @@ const VoiceChat = () => {
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
   const lastSentMessageRef = useRef<string>(''); // Track last message sent to LLM
+  const cleanTranscriptRef = useRef<string>(''); // Track clean transcript without TTS echo
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
   const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
 
@@ -406,8 +407,8 @@ const VoiceChat = () => {
 
       // ВАЖНО: Во время активного TTS или сразу после окончания проверяем ВСЕ распознавания на эхо
       const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
-      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0;
-      
+      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 20000 && timeSinceTTSEnd >= 0;
+
       if (!result.isFinal && (isSpeaking || currentAudioRef.current || isRecentlyAfterTTS)) {
         const interimTranscript = result[0].transcript.trim();
 
@@ -418,20 +419,29 @@ const VoiceChat = () => {
             console.log('🔇 Пропускаем эхо TTS (interim):', interimTranscript);
             return; // Ignore echo - не прерываем TTS
           }
-          
-          // Дополнительная проверка для недавно закончившегося TTS
+
+          // Дополнительная агрессивная проверка для недавно закончившегося TTS
           if (isRecentlyAfterTTS && currentTTSTextRef.current) {
             const normalizedTranscript = interimTranscript.toLowerCase().trim();
             const ttsText = currentTTSTextRef.current.toLowerCase();
-            if (ttsText.includes(normalizedTranscript) || normalizedTranscript.length > 5 && 
-                ttsText.includes(normalizedTranscript.substring(0, Math.min(20, normalizedTranscript.length)))) {
-              console.log('🔇 Пропускаем эхо TTS (interim, пост-TTS):', interimTranscript);
+
+            // Проверяем совпадение слов
+            const transcriptWords = normalizedTranscript.split(/\s+/).filter(word => word.length > 2);
+            const ttsWords = ttsText.split(/\s+/).filter(word => word.length > 2);
+            const matchingWords = transcriptWords.filter(word =>
+              ttsWords.some(ttsWord => ttsWord.includes(word) || word.includes(ttsWord))
+            ).length;
+            const matchRatio = transcriptWords.length > 0 ? matchingWords / transcriptWords.length : 0;
+
+            // Если совпадает много слов или точное совпадение - блокируем
+            if (matchRatio > 0.5 || ttsText.includes(normalizedTranscript)) {
+              console.log('🔇 Пропускаем эхо TTS (interim, пост-TTS, агрессивная проверка):', interimTranscript);
               return;
             }
           }
-          
+
           // Только если это НЕ эхо и уверенность очень высокая - прерываем
-          if (result[0].confidence > 0.9 && interimTranscript.length > 5 && !isRecentlyAfterTTS) {
+          if (result[0].confidence > 0.95 && interimTranscript.length > 5 && !isRecentlyAfterTTS) {
             console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
             console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
             stopCurrentTTS();
@@ -458,37 +468,58 @@ const VoiceChat = () => {
         }
       }
 
+      // Собираем чистый транскрипт для финального результата
       if (result.isFinal) {
-        const transcript = result[0].transcript.trim();
-        console.log('👤 Распознанный текст:', transcript);
-        console.log('🎯 Текст для вывода:', transcript);
+        const finalTranscript = result[0].transcript.trim();
+        console.log('👤 Финальный распознанный текст:', finalTranscript);
+
+        // Если есть чистый транскрипт, используем его вместо финального результата
+        const transcriptToProcess = cleanTranscriptRef.current || finalTranscript;
+        cleanTranscriptRef.current = ''; // Очищаем для следующего раза
+
+        console.log('🎯 Окончательный текст для обработки:', transcriptToProcess);
+
 
         if (transcript) {
-          // СТРОГАЯ ПРОВЕРКА: если TTS текст существует, проверяем на эхо
+          // 100% ЗАЩИТА ОТ ЭХА TTS: проверяем ВСЕ финальные результаты на эхо
           if (currentTTSTextRef.current) {
             const normalizedTranscript = transcript.toLowerCase().trim();
             const ttsText = currentTTSTextRef.current.toLowerCase();
             const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
 
-            // Если прошло меньше 15 секунд после TTS - строгая проверка
-            if (timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0) {
-              // Проверяем точное или частичное совпадение
-              const isExactMatch = ttsText.includes(normalizedTranscript);
-              const isPartialMatch = normalizedTranscript.length > 5 && 
-                ttsText.includes(normalizedTranscript);
-              
-              // Если большая часть текста совпадает с TTS - это эхо
-              const wordsInTranscript = normalizedTranscript.split(/\s+/).length;
-              const matchingWords = normalizedTranscript.split(/\s+/).filter(word => 
-                ttsText.includes(word)
-              ).length;
-              const matchRatio = wordsInTranscript > 0 ? matchingWords / wordsInTranscript : 0;
+            // Расширенная проверка: до 30 секунд после окончания TTS
+            if (timeSinceTTSEnd < 30000 && timeSinceTTSEnd >= 0) {
+              // Анализ совпадения слов - самая надежная проверка
+              const transcriptWords = normalizedTranscript.split(/\s+/).filter(word => word.length > 2);
+              const ttsWords = ttsText.split(/\s+/).filter(word => word.length > 2);
 
-              if (isExactMatch || isPartialMatch || matchRatio > 0.6) {
-                console.log('🔇 Финальный текст является эхом TTS (строгая проверка), пропускаем:', {
-                  transcript: normalizedTranscript.substring(0, 50),
+              // Считаем сколько слов из распознанного текста есть в TTS (с учетом морфологии)
+              const matchingWords = transcriptWords.filter(word =>
+                ttsWords.some(ttsWord => ttsWord.includes(word) || word.includes(ttsWord))
+              ).length;
+
+              const matchRatio = transcriptWords.length > 0 ? matchingWords / transcriptWords.length : 0;
+
+              // Проверяем последовательные совпадения (фраза целиком)
+              const transcriptClean = normalizedTranscript.replace(/[^\w\s]/g, '').toLowerCase();
+              const ttsClean = ttsText.replace(/[^\w\s]/g, '').toLowerCase();
+
+              const isExactMatch = ttsClean.includes(transcriptClean);
+              const isPartialMatch = transcriptClean.length > 10 && ttsClean.includes(transcriptClean);
+
+              // Критические условия для блокировки эха TTS:
+              // 1. Более 70% слов совпадают
+              // 2. Точное совпадение фразы
+              // 3. Частичное совпадение длинного текста (>20 символов)
+              // 4. Совпадение более 85% слов (даже если прошло больше времени)
+              if (matchRatio > 0.7 || isExactMatch || (isPartialMatch && transcriptClean.length > 20) || (matchRatio > 0.85 && transcriptWords.length > 3)) {
+                console.log('🔇 КРИТИЧЕСКОЕ ЭХО TTS ОБНАРУЖЕНО (финальный результат), пропускаем:', {
+                  transcript: normalizedTranscript.substring(0, 60) + '...',
                   matchRatio: matchRatio.toFixed(2),
-                  timeSinceEnd: timeSinceTTSEnd
+                  matchingWords: `${matchingWords}/${transcriptWords.length}`,
+                  timeSinceEnd: timeSinceTTSEnd,
+                  isExactMatch,
+                  isPartialMatch
                 });
                 return;
               }
@@ -496,23 +527,23 @@ const VoiceChat = () => {
           }
 
           // Check if this is echo from TTS (active or post-TTS)
-          if (isEchoOfTTS(transcript, result[0].confidence)) {
+          if (isEchoOfTTS(transcriptToProcess, result[0].confidence)) {
             console.log('🔇 Финальный текст является эхом TTS, пропускаем');
             return;
           }
 
           // Check for duplicate messages (avoid sending the same message twice)
-          const normalizedTranscript = transcript.toLowerCase().trim();
+          const normalizedTranscript = transcriptToProcess.toLowerCase().trim();
           const normalizedLastSent = lastSentMessageRef.current.toLowerCase().trim();
 
           if (normalizedTranscript === normalizedLastSent) {
-            console.log('🔄 Дублирующее сообщение, пропускаем:', transcript);
+            console.log('🔄 Дублирующее сообщение, пропускаем:', transcriptToProcess);
             return;
           }
 
           // Additional check: if message is very short and similar to what we just sent
           if (normalizedTranscript.length <= 15 && normalizedLastSent.includes(normalizedTranscript)) {
-            console.log('🔄 Похожее короткое сообщение после TTS, пропускаем:', transcript);
+            console.log('🔄 Похожее короткое сообщение после TTS, пропускаем:', transcriptToProcess);
             return;
           }
 
@@ -526,11 +557,11 @@ const VoiceChat = () => {
           }
 
           // Save current transcript for context
-          lastTranscriptRef.current = transcript;
-          lastSentMessageRef.current = transcript; // Track sent messages
+          lastTranscriptRef.current = transcriptToProcess;
+          lastSentMessageRef.current = transcriptToProcess; // Track sent messages
 
           // Send to LLM and get response (include previous context if interrupted)
-          const llmResponse = await sendToLLM(transcript);
+          const llmResponse = await sendToLLM(transcriptToProcess);
 
           // Small delay to ensure previous TTS is fully stopped
           await new Promise(resolve => setTimeout(resolve, 100));
