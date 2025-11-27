@@ -78,13 +78,13 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
 
-    // Allow localhost origins for development
-    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    // Allow production domain
+    if (origin === 'https://teacher.windexs.ru') {
       return callback(null, true);
     }
 
-    // Allow production domain
-    if (origin === 'https://teacher.windexs.ru') {
+    // Allow localhost origins for development
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
       return callback(null, true);
     }
 
@@ -757,7 +757,7 @@ app.get('/api/chat/:courseId/history', authenticateToken, (req, res) => {
       FROM chat_messages
       WHERE user_id = ? AND course_id = ?
       ORDER BY created_at DESC
-      LIMIT 30
+      LIMIT 15
     `).all(userId, courseId);
 
     // Reverse to get chronological order
@@ -977,7 +977,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
       FROM chat_messages
       WHERE user_id = ? AND course_id = ?
       ORDER BY created_at DESC
-      LIMIT 30
+      LIMIT 15
     `).all(userId, courseId).reverse();
     console.log('✅ История чата получена, сообщений:', historyMessages.length);
 
@@ -1037,7 +1037,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
           model: 'gpt-5.1',
           messages,
           temperature,
-          max_completion_tokens: 400,
+          max_completion_tokens: 200,
           stream: false
         });
 
@@ -1730,7 +1730,9 @@ app.post('/api/transcribe', (req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌐 Production URL: https://teacher.windexs.ru`);
+  console.log(`🏠 Local development: http://localhost:${PORT}`);
   if (!OPENAI_API_KEY) {
     console.log('⚠️  OPENAI_API_KEY not set - using fallback responses');
   }

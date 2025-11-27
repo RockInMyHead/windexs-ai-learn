@@ -70,7 +70,8 @@ const VoiceChat = () => {
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
-  
+  const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
+
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -78,18 +79,41 @@ const VoiceChat = () => {
 
   // Умная функция обнаружения эха TTS с многоуровневым анализом
   const isEchoOfTTS = useCallback((recognizedText: string, confidence = 0) => {
-    if (!currentTTSTextRef.current || !isSpeaking) {
+    if (!currentTTSTextRef.current) {
+      return false;
+    }
+
+    const normalizedRecognized = recognizedText.toLowerCase().trim();
+    const ttsText = currentTTSTextRef.current.toLowerCase();
+    const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
+
+    // Проверяем пост-TTS эхо (в течение 3 секунд после окончания озвучки)
+    if (!isSpeaking && timeSinceTTSEnd < 3000 && timeSinceTTSEnd >= 0) {
+      if (ttsText.includes(normalizedRecognized)) {
+        if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+          console.log('🔇 Detected post-TTS echo:', {
+            recognized: normalizedRecognized,
+            ttsText: ttsText.substring(0, 100) + '...',
+            timeSinceEnd: timeSinceTTSEnd,
+            confidence
+          });
+        }
+        return true;
+      }
+    }
+
+    // Если TTS не активен и прошло больше 3 секунд - нет эха
+    if (!isSpeaking) {
       if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
         console.log('🔇 Echo check: No active TTS', {
           hasTTS: !!currentTTSTextRef.current,
           isSpeaking,
+          timeSinceEnd: timeSinceTTSEnd,
           recognizedText
         });
       }
       return false;
     }
-
-    const normalizedRecognized = recognizedText.toLowerCase().trim();
 
     if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
       console.log('🎯 Starting echo detection analysis:', {
@@ -380,8 +404,8 @@ const VoiceChat = () => {
         console.log('👤 Распознанный текст:', transcript);
         console.log('🎯 Текст для вывода:', transcript);
 
-        // Check if this is echo from TTS
-        if (isEchoOfTTS(transcript)) {
+        // Check if this is echo from TTS (active or post-TTS)
+        if (isEchoOfTTS(transcript, result[0].confidence)) {
           console.log('🔇 Финальный текст является эхом TTS, пропускаем');
           return;
         }
@@ -822,6 +846,7 @@ const VoiceChat = () => {
     currentTTSTextRef.current = '';
     textCorrelationDetector.clearTTSText();
     setIsSpeaking(false);
+    lastTTSEndTimeRef.current = Date.now(); // Запоминаем время окончания TTS
   }, [textCorrelationDetector]);
 
   // Convert text to speech using OpenAI TTS
@@ -921,11 +946,25 @@ const VoiceChat = () => {
         console.log('✅ Озвучка завершена');
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
-        clearTTSState(); // Clear TTS state for echo detection
         setIsSpeaking(false);
+        // Запоминаем время окончания TTS для обнаружения эха
+        lastTTSEndTimeRef.current = Date.now();
+
+        // НЕ очищаем TTS текст сразу - оставляем для пост-TTS обнаружения эха
+        // clearTTSState() будет вызван через таймаут
+
+        // Очищаем состояние TTS через 3 секунды для пост-TTS обнаружения эха
+        setTimeout(() => {
+          if (!isSpeaking) { // Проверяем, что TTS не начался снова
+            clearTTSState();
+          }
+        }, 3000);
 
         // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
-        console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
+        // Добавляем небольшую задержку чтобы избежать захвата остатков TTS аудио
+        setTimeout(() => {
+          console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
+        }, 500);
       };
 
       audio.onerror = (event) => {
