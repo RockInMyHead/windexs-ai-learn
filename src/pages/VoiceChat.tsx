@@ -73,7 +73,8 @@ const VoiceChat = () => {
   const cleanTranscriptRef = useRef<string>(''); // Track clean transcript without TTS echo
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
   const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
-
+  const ttsFingerprintRef = useRef<Float32Array | null>(null); // Store spectral fingerprint of current TTS audio
+  
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -106,7 +107,20 @@ const VoiceChat = () => {
                                     cleanRecognized.includes(cleanTts) &&
                                     cleanTts.length / cleanRecognized.length > 0.9;
 
-    const isEcho = isExactMatch || isAlmostFullMatch || isAlmostFullReverseMatch;
+    // Additional spectral analysis if fingerprint is available
+    let spectralSimilarity = 0;
+    if (ttsFingerprintRef.current && typeof audioData !== 'undefined') {
+      try {
+        const inputFingerprint = computeInputFingerprint(audioData);
+        if (inputFingerprint) {
+          spectralSimilarity = compareFingerprints(ttsFingerprintRef.current, inputFingerprint);
+        }
+      } catch (error) {
+        console.warn('⚠️ Spectral analysis failed:', error);
+      }
+    }
+
+    const isEcho = isExactMatch || isAlmostFullMatch || isAlmostFullReverseMatch || (spectralSimilarity > 0.85);
 
     if (isEcho && ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
       console.log('🔇 ЭХО TTS ОБНАРУЖЕНО:', {
@@ -115,13 +129,162 @@ const VoiceChat = () => {
         isExactMatch,
         isAlmostFullMatch,
         isAlmostFullReverseMatch,
+        spectralSimilarity: spectralSimilarity.toFixed(3),
         recognizedLen: cleanRecognized.length,
         ttsLen: cleanTts.length
       });
     }
 
     return isEcho;
-  }, [currentTTSTextRef]);
+  }, [currentTTSTextRef, ttsFingerprintRef, computeInputFingerprint, compareFingerprints]);
+
+  // Function to compute spectral fingerprint of TTS audio
+  const computeTTSFingerprint = useCallback((audioBuffer: AudioBuffer): Float32Array | null => {
+    try {
+      const channelData = audioBuffer.getChannelData(0); // Use first channel
+      const sampleRate = audioBuffer.sampleRate;
+      const fftSize = 2048;
+
+      // Simple FFT-like spectral analysis (simplified version)
+      const fingerprint = new Float32Array(fftSize / 2);
+
+      // Compute power spectrum using simple DFT approximation
+      for (let k = 0; k < fingerprint.length; k++) {
+        let real = 0, imag = 0;
+        const freq = (k * sampleRate) / fftSize;
+
+        // Sample a few points for spectral estimation
+        for (let n = 0; n < Math.min(channelData.length, 1024); n += 8) {
+          const angle = (2 * Math.PI * k * n) / fftSize;
+          real += channelData[n] * Math.cos(angle);
+          imag += channelData[n] * Math.sin(angle);
+        }
+
+        fingerprint[k] = Math.sqrt(real * real + imag * imag);
+      }
+
+      // Normalize fingerprint
+      const maxVal = Math.max(...fingerprint);
+      if (maxVal > 0) {
+        for (let i = 0; i < fingerprint.length; i++) {
+          fingerprint[i] /= maxVal;
+        }
+      }
+
+      console.log('🎯 Computed TTS spectral fingerprint');
+      return fingerprint;
+      } catch (error) {
+      console.warn('⚠️ Failed to compute TTS fingerprint:', error);
+      return null;
+    }
+  }, []);
+
+  // Function to compute spectral fingerprint of input audio
+  const computeInputFingerprint = useCallback((audioData: Float32Array): Float32Array | null => {
+    try {
+      const fftSize = 2048;
+      const fingerprint = new Float32Array(fftSize / 2);
+
+      // Compute power spectrum using simple DFT approximation
+      for (let k = 0; k < fingerprint.length; k++) {
+        let real = 0, imag = 0;
+
+        // Sample audio data for spectral estimation
+        for (let n = 0; n < Math.min(audioData.length, 512); n += 4) {
+          const angle = (2 * Math.PI * k * n) / fftSize;
+          real += audioData[n] * Math.cos(angle);
+          imag += audioData[n] * Math.sin(angle);
+        }
+
+        fingerprint[k] = Math.sqrt(real * real + imag * imag);
+      }
+
+      // Normalize fingerprint
+      const maxVal = Math.max(...fingerprint);
+      if (maxVal > 0) {
+        for (let i = 0; i < fingerprint.length; i++) {
+          fingerprint[i] /= maxVal;
+        }
+      }
+
+      return fingerprint;
+    } catch (error) {
+      console.warn('⚠️ Failed to compute input fingerprint:', error);
+      return null;
+    }
+  }, []);
+
+  // Function to compare spectral fingerprints using cosine similarity
+  const compareFingerprints = useCallback((fingerprint1: Float32Array, fingerprint2: Float32Array): number => {
+    try {
+      let dotProduct = 0;
+      let norm1 = 0;
+      let norm2 = 0;
+
+      const minLength = Math.min(fingerprint1.length, fingerprint2.length);
+
+      for (let i = 0; i < minLength; i++) {
+        dotProduct += fingerprint1[i] * fingerprint2[i];
+        norm1 += fingerprint1[i] * fingerprint1[i];
+        norm2 += fingerprint2[i] * fingerprint2[i];
+      }
+
+      if (norm1 === 0 || norm2 === 0) return 0;
+
+      return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
+    } catch (error) {
+      console.warn('⚠️ Failed to compare fingerprints:', error);
+      return 0;
+    }
+  }, []);
+
+  // Enhanced VAD with spectral analysis
+  const enhancedVAD = useCallback((audioData: Float32Array, hasSpeech: boolean): { hasSpeech: boolean, isTTSEcho: boolean } => {
+    // Basic VAD check
+    if (!hasSpeech) {
+      return { hasSpeech: false, isTTSEcho: false };
+    }
+
+    // If no TTS fingerprint available, assume it's user speech
+    if (!ttsFingerprintRef.current) {
+      return { hasSpeech: true, isTTSEcho: false };
+    }
+
+    try {
+      // Compute spectral fingerprint of input audio
+      const inputFingerprint = computeInputFingerprint(audioData);
+      if (!inputFingerprint) {
+        return { hasSpeech: true, isTTSEcho: false };
+      }
+
+      // Compare with TTS fingerprint using cosine similarity
+      const similarity = compareFingerprints(ttsFingerprintRef.current, inputFingerprint);
+
+      console.log('🔊 Enhanced VAD analysis:', {
+        hasSpeech,
+        spectralSimilarity: similarity.toFixed(3),
+        isTTSEcho: similarity > 0.8 // High similarity threshold
+      });
+
+      // If spectral similarity is high, it's likely TTS echo
+      if (similarity > 0.8) {
+        return { hasSpeech: true, isTTSEcho: true };
+      }
+
+      // Otherwise, it's genuine user speech
+      return { hasSpeech: true, isTTSEcho: false };
+    } catch (error) {
+      console.warn('⚠️ Enhanced VAD failed:', error);
+      return { hasSpeech: true, isTTSEcho: false };
+    }
+  }, [computeInputFingerprint, compareFingerprints]);
+
+  // Function to convert audio blob to AudioBuffer
+  const blobToAudioBuffer = useCallback(async (blob: Blob): Promise<AudioBuffer> => {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    return await audioContext.decodeAudioData(arrayBuffer);
+  }, []);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
@@ -335,21 +498,21 @@ const VoiceChat = () => {
           if (shouldInterrupt) {
             const interruptType = isSpeaking ? 'во время активного TTS' : 'после завершения TTS';
             console.log(`🛑 Обнаружена речь пользователя (${interruptType}), останавливаю TTS...`);
-            console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
-            stopCurrentTTS();
-            // Очистить состояние TTS после прерывания
-            clearTTSState();
+          console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
+          stopCurrentTTS();
+          // Очистить состояние TTS после прерывания
+          clearTTSState();
 
-            // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
-            if (speechRecognitionRef.current && isRecording) {
-              try {
-                speechRecognitionRef.current.stop();
-                setIsRecording(false);
-                console.log('🎤 Распознавание речи остановлено после прерывания TTS');
-              } catch (e) {
-                console.log('⚠️ Ошибка остановки распознавания:', e);
-              }
+          // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
+          if (speechRecognitionRef.current && isRecording) {
+            try {
+              speechRecognitionRef.current.stop();
+              setIsRecording(false);
+              console.log('🎤 Распознавание речи остановлено после прерывания TTS');
+            } catch (e) {
+              console.log('⚠️ Ошибка остановки распознавания:', e);
             }
+          }
           }
           // УБРАНА блокировка всех interim результатов во время/после TTS
           // Теперь проверка на эхо происходит только через isEchoOfTTS выше
@@ -372,8 +535,8 @@ const VoiceChat = () => {
           // ПРОСТАЯ ПРОВЕРКА ЭХА TTS: проверяем точное соответствие
           if (isEchoOfTTS(transcriptToProcess, result[0].confidence)) {
             console.log('🔇 ЭХО TTS ОБНАРУЖЕНО (финальный результат), пропускаем:', transcriptToProcess);
-            return;
-          }
+          return;
+        }
 
           // Check for duplicate messages (avoid sending the same message twice)
           const normalizedTranscript = transcriptToProcess.toLowerCase().trim();
@@ -392,7 +555,7 @@ const VoiceChat = () => {
 
           // Clear TTS state since user is actually speaking
           clearTTSState();
-
+          
           // Double-check TTS is stopped
           if (isSpeaking) {
             console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
@@ -837,6 +1000,7 @@ const VoiceChat = () => {
   // Синхронная очистка состояния TTS для всех детекторов
   const clearTTSState = useCallback(() => {
     currentTTSTextRef.current = '';
+    ttsFingerprintRef.current = null;
     textCorrelationDetector.clearTTSText();
     setIsSpeaking(false);
     lastTTSEndTimeRef.current = Date.now(); // Запоминаем время окончания TTS
@@ -913,6 +1077,17 @@ const VoiceChat = () => {
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
+      // Compute spectral fingerprint for advanced echo detection
+      try {
+        const audioBuffer = await blobToAudioBuffer(audioBlob);
+        const fingerprint = computeTTSFingerprint(audioBuffer);
+        ttsFingerprintRef.current = fingerprint;
+        console.log('🎯 TTS spectral fingerprint computed and stored');
+      } catch (error) {
+        console.warn('⚠️ Failed to compute TTS fingerprint:', error);
+        ttsFingerprintRef.current = null;
+      }
+
       // Capture TTS frequency profile for echo detection
       ttsEchoDetector.captureTTSProfile(audioBlob);
 
@@ -956,7 +1131,7 @@ const VoiceChat = () => {
         // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
         // Добавляем небольшую задержку чтобы избежать захвата остатков TTS аудио
         setTimeout(() => {
-          console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
+        console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
         }, 500);
       };
 
