@@ -83,6 +83,11 @@ app.use(cors({
       return callback(null, true);
     }
 
+    // Allow production domain
+    if (origin === 'https://teacher.windexs.ru') {
+      return callback(null, true);
+    }
+
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true
