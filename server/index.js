@@ -865,27 +865,61 @@ function ensureCourseExists(userId, courseId) {
 }
 
 // Send message and get AI response (streaming)
-app.post('/api/chat/:courseId/message', authenticateToken, async (req, res) => {
+app.post('/api/chat/:courseId/message', upload.single('audio'), authenticateToken, async (req, res) => {
   try {
     console.log('📨 Новый запрос к /api/chat/:courseId/message');
     console.log('👤 User ID:', req.user?.userId);
     console.log('📋 Course ID:', req.params.courseId);
-    console.log('💬 Content:', req.body.content);
-    console.log('🎤 Message Type:', req.body.messageType);
 
     const userId = req.user.userId;
     const { courseId: requestedCourseId } = req.params;
-    const { content, messageType = 'text' } = req.body;
+
+    let content, messageType = 'text';
+
+    // Handle voice messages (FormData)
+    if (req.file) {
+      console.log('🎤 Голосовое сообщение получено');
+      messageType = 'voice';
+
+      // Transcribe audio to text
+      if (!openai) {
+        console.error('OpenAI client not initialized');
+        return res.status(500).json({ error: 'OpenAI API недоступен' });
+      }
+
+      const audioBuffer = req.file.buffer;
+      console.log('🎵 Транскрибация аудио...');
+
+      const transcription = await openai.audio.transcriptions.create({
+        file: new File([audioBuffer], 'audio.webm', { type: 'audio/webm' }),
+        model: "whisper-1",
+        language: "ru"
+      });
+
+      content = transcription.text;
+      console.log('✅ Аудио транскрибировано:', content);
+
+      if (!content || !content.trim()) {
+        console.log('❌ Транскрибация пуста');
+        return res.status(400).json({ error: 'Не удалось распознать речь' });
+      }
+    } else {
+      // Handle text messages (JSON)
+      console.log('💬 Текстовое сообщение получено');
+      content = req.body.content;
+      console.log('💬 Content:', content);
+      console.log('🎤 Message Type:', req.body.messageType);
+
+      if (!content || !content.trim()) {
+        console.log('❌ Контент пустой');
+        return res.status(400).json({ error: 'Сообщение не может быть пустым' });
+      }
+    }
 
     // Ensure course exists and get actual course ID
     const courseId = ensureCourseExists(userId, requestedCourseId);
 
     console.log('✅ Проверка контента пройдена');
-
-    if (!content || !content.trim()) {
-      console.log('❌ Контент пустой');
-      return res.status(400).json({ error: 'Сообщение не может быть пустым' });
-    }
 
     // Save user message
     console.log('💾 Сохранение сообщения пользователя...');
