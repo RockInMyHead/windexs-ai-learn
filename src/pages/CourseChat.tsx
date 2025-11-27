@@ -647,26 +647,6 @@ const CourseChat = () => {
             </div>
 
             <div className="border-t p-4 bg-background">
-              {/* Recording indicator */}
-              {isRecording && (
-                <div className="mb-3 flex items-center gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
-                    <Volume2 className="w-4 h-4 text-red-500" />
-                  </div>
-                  <span className="text-red-700 font-medium">Запись голоса: {formatTime(recordingTime)}</span>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={stopRecording}
-                    className="ml-auto"
-                  >
-                    <Square className="w-3 h-3 mr-1" />
-                    Стоп
-                  </Button>
-                </div>
-              )}
-
               {/* Selected files preview */}
               {selectedFiles.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2">
