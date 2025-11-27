@@ -868,6 +868,14 @@ function ensureCourseExists(userId, courseId) {
 app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res) => {
   try {
     console.log('📨 Новый запрос к /api/chat/:courseId/message');
+    console.log('👤 User ID:', req.user?.userId);
+    console.log('📋 Course ID:', req.params.courseId);
+    console.log('📦 Request body:', req.body);
+    console.log('🎵 Has file:', !!req.file);
+    console.log('🔑 Headers:', {
+      contentType: req.headers['content-type'],
+      authorization: req.headers.authorization ? 'present' : 'missing'
+    });
 
     // Extract token from form data or headers
     let token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
@@ -975,8 +983,9 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
 
     // Generate system prompt based on message type
     console.log('🤖 Генерация системного промпта...');
+    console.log('🎯 Финальный messageType перед проверкой:', messageType);
     const isVoiceChat = messageType === 'voice';
-    console.log('🎤 Это голосовой чат?', isVoiceChat);
+    console.log('🎤 Это голосовой чат?', isVoiceChat, `(messageType: "${messageType}")`);
     const systemPrompt = isVoiceChat
       ? generateVoiceChatPrompt(courseId, userProfile, learningProfile, pendingHomework)
       : generateSystemPrompt(courseId, userProfile, pendingHomework);

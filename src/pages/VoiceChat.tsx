@@ -410,6 +410,13 @@ const VoiceChat = () => {
       }
 
       // Send raw user message to server API
+      console.log('🚀 Отправка в VoiceChat:', {
+        url: `https://teacher.windexs.ru/api/chat/${courseId}/message`,
+        content: messageContent,
+        messageType: 'voice',
+        token: token ? 'present' : 'missing'
+      });
+
       const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
         headers: {
