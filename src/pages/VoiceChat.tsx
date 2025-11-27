@@ -801,7 +801,20 @@ const VoiceChat = () => {
 
       console.log('✅ LLM ответил:', data.message);
 
-      return data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+      // Проверяем, что ответ не пустой
+      if (!data.message || data.message.trim() === '') {
+        console.warn('⚠️ Сервер вернул пустой ответ LLM:', {
+          messageId: data.messageId,
+          hasToken: !!token,
+          courseId: courseId,
+          messageContent: messageContent.substring(0, 100) + '...',
+          fullResponse: JSON.stringify(data)
+        });
+        // Возвращаем fallback, но логируем проблему
+        return 'Извини, у меня возникла проблема с генерацией ответа. Попробуй задать вопрос по-другому.';
+      }
+
+      return data.message;
 
     } catch (error) {
       console.error('❌ Ошибка LLM:', error);
