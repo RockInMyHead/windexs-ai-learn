@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navigation from "@/components/Navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { User, Mail, Bell, Lock, Palette, Globe, LogOut } from "lucide-react";
+import { User, Mail, Bell, Lock, Palette, Globe, LogOut, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/dialog";
 
 const Account = () => {
-  const { user, isAuthenticated, logout, updateProfile, changePassword, deleteAccount } = useAuth();
+  const { user, isAuthenticated, logout, clearStoredToken, updateProfile, changePassword, deleteAccount } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -136,6 +136,14 @@ const Account = () => {
       description: "Вы вышли из аккаунта",
     });
     navigate("/");
+  };
+
+  const handleClearToken = () => {
+    clearStoredToken();
+    toast({
+      title: "Кэш очищен",
+      description: "Сохраненный токен был удален. Пожалуйста, войдите заново.",
+    });
   };
 
   const handleDeleteAccount = async () => {
@@ -356,6 +364,15 @@ const Account = () => {
                     </DialogFooter>
                   </DialogContent>
                 </Dialog>
+
+                <Button
+                  variant="outline"
+                  className="w-full justify-start"
+                  onClick={handleClearToken}
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  Очистить кэш входа
+                </Button>
 
                 <Button
                   variant="outline"

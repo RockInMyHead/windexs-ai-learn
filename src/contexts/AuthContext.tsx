@@ -15,6 +15,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string, name: string) => Promise<void>;
   logout: () => Promise<void>;
+  clearStoredToken: () => void;
   updateProfile: (data: { name?: string; email?: string }) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   deleteAccount: () => Promise<void>;
@@ -30,57 +31,84 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const storedToken = localStorage.getItem('token');
-    if (storedToken) {
-      setToken(storedToken);
-      fetchUser(storedToken);
-    } else {
-      setIsLoading(false);
-    }
+    const initializeAuth = async () => {
+      const storedToken = localStorage.getItem('token');
+      if (storedToken) {
+        console.log('🔐 Found stored token, validating...');
+        setToken(storedToken);
+        await fetchUser(storedToken);
+      } else {
+        console.log('🔐 No stored token found');
+        setIsLoading(false);
+      }
+    };
+
+    initializeAuth();
   }, []);
 
   const fetchUser = async (authToken: string) => {
     try {
+      console.log('🔐 Checking authentication with stored token...');
       const response = await fetch(`${API_URL}/auth/me`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
         }
       });
-      
+
+      console.log('🔐 Auth check response:', response.status);
+
       if (response.ok) {
         const data = await response.json();
+        console.log('✅ User authenticated:', data.user.email);
         setUser(data.user);
       } else {
+        console.log('❌ Token invalid or expired, clearing stored token');
         localStorage.removeItem('token');
         setToken(null);
+        setUser(null);
       }
     } catch (error) {
-      console.error('Failed to fetch user:', error);
+      console.error('❌ Failed to fetch user:', error);
+      console.log('🧹 Clearing invalid token from storage');
       localStorage.removeItem('token');
       setToken(null);
+      setUser(null);
     } finally {
       setIsLoading(false);
     }
   };
 
   const login = async (email: string, password: string) => {
-    const response = await fetch(`${API_URL}/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ email, password })
-    });
+    console.log('🔐 Attempting login for:', email);
 
-    const data = await response.json();
+    try {
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email, password })
+      });
 
-    if (!response.ok) {
-      throw new Error(data.error || 'Ошибка входа');
+      console.log('🔐 Login response status:', response.status);
+
+      const data = await response.json();
+      console.log('🔐 Login response data:', data);
+
+      if (!response.ok) {
+        console.error('❌ Login failed:', data.error);
+        throw new Error(data.error || 'Ошибка входа');
+      }
+
+      console.log('✅ Login successful, storing token');
+      localStorage.setItem('token', data.token);
+      setToken(data.token);
+      setUser(data.user);
+
+    } catch (error) {
+      console.error('❌ Login error:', error);
+      throw error;
     }
-
-    localStorage.setItem('token', data.token);
-    setToken(data.token);
-    setUser(data.user);
   };
 
   const register = async (email: string, password: string, name: string) => {
@@ -103,6 +131,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setUser(data.user);
   };
 
+  const clearStoredToken = () => {
+    console.log('🧹 Clearing stored authentication token');
+    localStorage.removeItem('token');
+    setToken(null);
+    setUser(null);
+    setIsLoading(false);
+  };
+
   const logout = async () => {
     if (token) {
       try {
@@ -117,9 +153,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
     }
 
-    localStorage.removeItem('token');
-    setToken(null);
-    setUser(null);
+    clearStoredToken();
   };
 
   const updateProfile = async (data: { name?: string; email?: string }) => {
@@ -193,6 +227,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         login,
         register,
         logout,
+        clearStoredToken,
         updateProfile,
         changePassword,
         deleteAccount
