@@ -1091,7 +1091,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
 
     try {
       const stream = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5.1',
         messages,
         temperature,
         max_completion_tokens: 2000,
@@ -1417,7 +1417,7 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
 
     console.log('🚀 Отправка запроса в OpenAI API...');
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5.1',
       messages,
       temperature: 0.7,
       max_completion_tokens: 1000,
