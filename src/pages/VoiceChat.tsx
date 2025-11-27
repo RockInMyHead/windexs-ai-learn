@@ -50,7 +50,6 @@ const VoiceChat = () => {
   const [isGeneratingResponse, setIsGeneratingResponse] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMicEnabled, setIsMicEnabled] = useState(true);
-  const [ttsInterrupted, setTtsInterrupted] = useState(false);
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
 
@@ -86,10 +85,6 @@ const VoiceChat = () => {
   }
 
   setIsSpeaking(false);
-  setTtsInterrupted(true);
-
-  // Сбросить индикатор через 2 секунды
-  setTimeout(() => setTtsInterrupted(false), 2000);
 }, []);
 
   // Initialize Web Speech API
@@ -657,15 +652,6 @@ const VoiceChat = () => {
     <div className="min-h-screen bg-background">
       <Navigation />
 
-      {/* TTS interruption indicator */}
-      {ttsInterrupted && (
-        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50">
-          <div className="bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg animate-bounce flex items-center gap-2">
-            <div className="w-3 h-3 bg-white rounded-full animate-pulse"></div>
-            <span className="text-sm font-medium">🎤 Речь распознана - TTS остановлен</span>
-          </div>
-        </div>
-      )}
 
       <main className="container mx-auto px-4 pt-24 pb-16">
         <div className="max-w-2xl mx-auto">
