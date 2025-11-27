@@ -325,7 +325,8 @@ const CourseChat = () => {
       const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           text: text,

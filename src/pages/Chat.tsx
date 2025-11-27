@@ -6,6 +6,7 @@ import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import MathRenderer from "@/components/MathRenderer";
 import { useState, useRef, useEffect } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface Message {
   role: 'user' | 'ai';
@@ -15,6 +16,7 @@ interface Message {
 }
 
 const Chat = () => {
+  const { token } = useAuth();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'ai',
@@ -221,7 +223,8 @@ const Chat = () => {
       const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           text: text,
