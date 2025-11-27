@@ -77,7 +77,7 @@ const Chat = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:3001/api/chat/general', {
+      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -218,7 +218,7 @@ const Chat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('http://localhost:3001/api/tts', {
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
