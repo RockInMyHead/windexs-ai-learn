@@ -69,6 +69,7 @@ const VoiceChat = () => {
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
+  const lastSentMessageRef = useRef<string>(''); // Track last message sent to LLM
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
   const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
 
@@ -87,15 +88,22 @@ const VoiceChat = () => {
     const ttsText = currentTTSTextRef.current.toLowerCase();
     const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
 
-    // Проверяем пост-TTS эхо (в течение 3 секунд после окончания озвучки)
-    if (!isSpeaking && timeSinceTTSEnd < 3000 && timeSinceTTSEnd >= 0) {
-      if (ttsText.includes(normalizedRecognized)) {
+    // Проверяем пост-TTS эхо (в течение 10 секунд после окончания озвучки)
+    if (!isSpeaking && timeSinceTTSEnd < 10000 && timeSinceTTSEnd >= 0) {
+      // Проверяем точное совпадение или схожесть
+      const isExactMatch = ttsText.includes(normalizedRecognized);
+      const isPartialMatch = normalizedRecognized.length > 3 &&
+        ttsText.toLowerCase().includes(normalizedRecognized.toLowerCase());
+
+      if (isExactMatch || (isPartialMatch && confidence > 0.8)) {
         if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
           console.log('🔇 Detected post-TTS echo:', {
             recognized: normalizedRecognized,
             ttsText: ttsText.substring(0, 100) + '...',
             timeSinceEnd: timeSinceTTSEnd,
-            confidence
+            confidence,
+            isExactMatch,
+            isPartialMatch
           });
         }
         return true;
@@ -411,9 +419,18 @@ const VoiceChat = () => {
         }
 
         if (transcript) {
+          // Check for duplicate messages (avoid sending the same message twice)
+          const normalizedTranscript = transcript.toLowerCase().trim();
+          const normalizedLastSent = lastSentMessageRef.current.toLowerCase().trim();
+
+          if (normalizedTranscript === normalizedLastSent) {
+            console.log('🔄 Дублирующее сообщение, пропускаем:', transcript);
+            return;
+          }
+
           // Clear TTS state since user is actually speaking
           clearTTSState();
-          
+
           // Double-check TTS is stopped
           if (isSpeaking) {
             console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
@@ -422,6 +439,7 @@ const VoiceChat = () => {
 
           // Save current transcript for context
           lastTranscriptRef.current = transcript;
+          lastSentMessageRef.current = transcript; // Track sent messages
 
           // Send to LLM and get response (include previous context if interrupted)
           const llmResponse = await sendToLLM(transcript);
@@ -953,12 +971,12 @@ const VoiceChat = () => {
         // НЕ очищаем TTS текст сразу - оставляем для пост-TTS обнаружения эха
         // clearTTSState() будет вызван через таймаут
 
-        // Очищаем состояние TTS через 3 секунды для пост-TTS обнаружения эха
+        // Очищаем состояние TTS через 10 секунд для пост-TTS обнаружения эха
         setTimeout(() => {
           if (!isSpeaking) { // Проверяем, что TTS не начался снова
             clearTTSState();
           }
-        }, 3000);
+        }, 10000);
 
         // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
         // Добавляем небольшую задержку чтобы избежать захвата остатков TTS аудио
