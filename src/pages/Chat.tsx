@@ -374,7 +374,7 @@ const Chat = () => {
         },
         body: JSON.stringify({
           text: text,
-          voice: 'shimmer'
+          voice: 'nova' // High-quality voice for chat
         })
       });
 

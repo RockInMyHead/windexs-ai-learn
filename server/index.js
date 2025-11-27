@@ -1576,7 +1576,7 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     console.log('🔊 === ПОСТУПИЛ ЗАПРОС НА /api/tts ===');
     console.log('TTS request received at', new Date().toISOString());
 
-    const { text, voice = 'shimmer' } = req.body;
+    const { text, voice = 'nova' } = req.body; // Nova - лучший голос для образовательного контента
 
     if (!text || !text.trim()) {
       console.error('❌ No text provided');
@@ -1591,13 +1591,13 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     console.log('Sending to OpenAI TTS...');
     console.log('Text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
 
-    // Generate speech using OpenAI TTS
+    // Generate speech using OpenAI TTS (HD quality)
     const mp3 = await openai.audio.speech.create({
-      model: "tts-1",
+      model: "tts-1-hd",  // HD качество для лучшего звучания
       voice: voice, // Options: alloy, echo, fable, onyx, nova, shimmer
       input: text.trim(),
       response_format: "mp3",
-      speed: 0.9
+      speed: 0.8  // Немного медленнее для лучшего понимания
     });
 
     // Convert response to buffer

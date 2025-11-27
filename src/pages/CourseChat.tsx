@@ -461,7 +461,7 @@ const CourseChat = () => {
         },
         body: JSON.stringify({
           text: text,
-          voice: 'shimmer'
+          voice: 'nova' // High-quality educational voice
         })
       });
 

@@ -527,7 +527,7 @@ const VoiceChat = () => {
         },
         body: JSON.stringify({
           text: text,
-          voice: 'shimmer' // Bright and energetic female voice
+          voice: 'nova' // High-quality educational voice (HD model)
         })
       });
 
