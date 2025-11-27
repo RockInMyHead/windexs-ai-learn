@@ -175,7 +175,7 @@ const VoiceChat = () => {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
 
-      const response = await fetch('http://localhost:3001/api/transcribe', {
+      const response = await fetch('https://teacher.windexs.ru/api/transcribe', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -643,7 +643,7 @@ const VoiceChat = () => {
   // Get user profile from API
   const getUserProfile = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/profile', {
+      const response = await fetch('https://teacher.windexs.ru/api/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -730,13 +730,13 @@ const VoiceChat = () => {
 
       // Send raw user message to server API
       console.log('🚀 Отправка в VoiceChat:', {
-        url: `http://localhost:3001/api/chat/${courseId}/message`,
+        url: `https://teacher.windexs.ru/api/chat/${courseId}/message`,
         content: messageContent,
         messageType: 'voice',
         token: token ? 'present' : 'missing'
       });
 
-      const response = await fetch(`http://localhost:3001/api/chat/${courseId}/message`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -842,7 +842,7 @@ const VoiceChat = () => {
     try {
       console.log('🔊 Отправка текста в OpenAI TTS...');
 
-      const response = await fetch('http://localhost:3001/api/tts', {
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
