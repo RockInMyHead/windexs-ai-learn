@@ -42,6 +42,16 @@ const CourseChat = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Helper function to stop any currently playing audio (for interruption)
+  const stopCurrentAudio = useCallback(() => {
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+      setCurrentAudio(null);
+    }
+    setSpeakingMessageId(null);
+  }, [currentAudio]);
+
   // Scroll to bottom when messages change
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -85,6 +95,9 @@ const CourseChat = () => {
 
   const handleSend = async () => {
     if ((!inputMessage.trim() && selectedFiles.length === 0) || isSending) return;
+
+    // Stop any currently playing audio when sending a new message (interruption)
+    stopCurrentAudio();
 
     const messageContent = inputMessage.trim();
     const hasVoiceFile = selectedFiles.some(file => file.type.startsWith('audio/'));
@@ -259,6 +272,9 @@ const CourseChat = () => {
   };
 
   const sendVoiceMessage = async (audioFile: File) => {
+    // Stop any currently playing audio when sending a new voice message (interruption)
+    stopCurrentAudio();
+    
     setIsSending(true);
 
     // Add user message immediately
@@ -368,6 +384,9 @@ const CourseChat = () => {
   };
 
   const startRecording = async () => {
+    // Immediately stop any playing audio when user starts recording (interruption)
+    stopCurrentAudio();
+    
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
