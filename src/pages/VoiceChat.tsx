@@ -58,14 +58,49 @@ const VoiceChat = () => {
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
+  const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
   
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
+  // Function to check if recognized text is an echo of the TTS output
+  const isEchoOfTTS = (recognizedText: string): boolean => {
+    if (!currentTTSTextRef.current || !isSpeaking) return false;
+    
+    const normalizedRecognized = recognizedText.toLowerCase().trim();
+    const normalizedTTS = currentTTSTextRef.current.toLowerCase();
+    
+    // Check if recognized text is contained in the TTS text (echo detection)
+    // Split TTS text into words and check if recognized text matches any portion
+    const ttsWords = normalizedTTS.split(/\s+/);
+    const recognizedWords = normalizedRecognized.split(/\s+/);
+    
+    // If recognized text is very short (1-2 words) and appears in TTS, it's likely echo
+    if (recognizedWords.length <= 3) {
+      for (const word of recognizedWords) {
+        if (word.length > 2 && normalizedTTS.includes(word)) {
+          console.log('🔇 Обнаружено эхо TTS, игнорируем:', normalizedRecognized);
+          return true;
+        }
+      }
+    }
+    
+    // Check if the recognized phrase appears in the TTS text
+    if (normalizedRecognized.length > 3 && normalizedTTS.includes(normalizedRecognized)) {
+      console.log('🔇 Обнаружена фраза эхо TTS, игнорируем:', normalizedRecognized);
+      return true;
+    }
+    
+    return false;
+  };
+
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
+    // Clear TTS text for echo detection
+    currentTTSTextRef.current = '';
+    
     if (currentAudioRef.current) {
       console.log('🛑 Агрессивно прерываю текущую озвучку...');
 
@@ -260,7 +295,14 @@ const VoiceChat = () => {
         const interimTranscript = result[0].transcript.trim();
 
         // Более консервативная логика прерывания (только при уверенном распознавании)
+        // И проверяем, что это не эхо от TTS
         if (interimTranscript.length > 2 && result[0].confidence > 0.7) {
+          // Проверяем, не является ли распознанный текст эхом от TTS
+          if (isEchoOfTTS(interimTranscript)) {
+            console.log('🔇 Пропускаем эхо TTS:', interimTranscript);
+            return; // Ignore echo
+          }
+          
           console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
           console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
           stopCurrentTTS();
@@ -272,7 +314,16 @@ const VoiceChat = () => {
         console.log('👤 Распознанный текст:', transcript);
         console.log('🎯 Текст для вывода:', transcript);
 
+        // Check if this is echo from TTS
+        if (isEchoOfTTS(transcript)) {
+          console.log('🔇 Финальный текст является эхом TTS, пропускаем');
+          return;
+        }
+
         if (transcript) {
+          // Clear TTS text ref since user is actually speaking
+          currentTTSTextRef.current = '';
+          
           // Double-check TTS is stopped
           if (isSpeaking) {
             console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
@@ -708,6 +759,9 @@ const VoiceChat = () => {
       return;
     }
 
+    // Store the TTS text for echo detection
+    currentTTSTextRef.current = text;
+    
     setIsSpeaking(true);
 
     // Активировать распознавание речи для прерывания TTS (если микрофон включен)
@@ -785,6 +839,7 @@ const VoiceChat = () => {
         console.log('✅ Озвучка завершена');
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
+        currentTTSTextRef.current = ''; // Clear TTS text for echo detection
         setIsSpeaking(false);
 
         // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
