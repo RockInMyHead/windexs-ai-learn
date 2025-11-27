@@ -1034,7 +1034,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
         console.log('🎤 Voice chat запрос в OpenAI (без стриминга)...');
         console.log('📝 Сообщения для voice chat:', JSON.stringify(messages, null, 2));
         const completion = await openai.chat.completions.create({
-          model: 'gpt-5.1',
+          model: 'gpt-4o',
           messages,
           temperature,
           max_completion_tokens: 200,
