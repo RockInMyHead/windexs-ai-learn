@@ -136,7 +136,7 @@ const VoiceChat = () => {
     }
 
     return isEcho;
-  }, [currentTTSTextRef, ttsFingerprintRef, computeInputFingerprint, compareFingerprints]);
+  }, [currentTTSTextRef, ttsFingerprintRef]);
 
   // Function to compute spectral fingerprint of TTS audio
   const computeTTSFingerprint = useCallback((audioBuffer: AudioBuffer): Float32Array | null => {
