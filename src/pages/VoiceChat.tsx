@@ -292,6 +292,18 @@ const VoiceChat = () => {
           await speakText(llmResponse);
 
           console.log('✅ Ответ озвучен, продолжаем прослушивание...');
+
+          // Ensure speech recognition continues after processing
+          if (speechRecognitionRef.current && isRecording && !isSpeaking) {
+            try {
+              console.log('🔄 Перезапуск распознавания после обработки ответа...');
+              speechRecognitionRef.current.start();
+            } catch (e: any) {
+              if (e.name !== 'InvalidStateError') {
+                console.error('❌ Ошибка перезапуска после ответа:', e);
+              }
+            }
+          }
         }
       }
     };
@@ -775,16 +787,8 @@ const VoiceChat = () => {
         currentAudioRef.current = null;
         setIsSpeaking(false);
 
-        // Остановить распознавание речи после завершения TTS
-        if (speechRecognitionRef.current && isRecording) {
-          console.log('🎤 Останавливаю распознавание речи после TTS');
-          try {
-            speechRecognitionRef.current.stop();
-            setIsRecording(false);
-          } catch (error) {
-            console.log('⚠️ Ошибка остановки распознавания:', error);
-          }
-        }
+        // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
+        console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
       };
 
       audio.onerror = (event) => {
