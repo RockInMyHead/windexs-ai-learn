@@ -87,6 +87,8 @@ const CourseChat = () => {
     if ((!inputMessage.trim() && selectedFiles.length === 0) || isSending) return;
 
     const messageContent = inputMessage.trim();
+    const hasVoiceFile = selectedFiles.some(file => file.type.startsWith('audio/'));
+
     setInputMessage("");
     setSelectedFiles([]);
     setIsSending(true);
@@ -95,7 +97,7 @@ const CourseChat = () => {
     const userMessage: ChatMessage = {
       id: `temp-${Date.now()}`,
       role: 'user',
-      content: messageContent,
+      content: hasVoiceFile ? '🎤 Голосовое сообщение' : messageContent,
       created_at: new Date().toISOString()
     };
     setMessages(prev => [...prev, userMessage]);
@@ -113,18 +115,38 @@ const CourseChat = () => {
     try {
       abortControllerRef.current = new AbortController();
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          content: messageContent,
-          messageType: 'text'
-        }),
-        signal: abortControllerRef.current.signal
-      });
+      let response;
+
+      if (hasVoiceFile) {
+        // Handle voice message
+        const voiceFile = selectedFiles.find(file => file.type.startsWith('audio/'));
+        if (!voiceFile) return;
+
+        const formData = new FormData();
+        formData.append('audio', voiceFile);
+        formData.append('messageType', 'voice');
+        formData.append('token', token);
+
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+          method: 'POST',
+          body: formData,
+          signal: abortControllerRef.current.signal
+        });
+      } else {
+        // Handle text message
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            content: messageContent,
+            messageType: 'text'
+          }),
+          signal: abortControllerRef.current.signal
+        });
+      }
 
       if (!response.ok) {
         throw new Error('Failed to send message');
@@ -259,7 +281,14 @@ const CourseChat = () => {
 
       mediaRecorder.onstop = () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-        const audioFile = new File([audioBlob], `voice-message-${Date.now()}.wav`, { type: 'audio/wav' });
+
+        // Create a file-like object that's compatible with all browsers
+        const audioFile = Object.assign(audioBlob, {
+          name: `voice-message-${Date.now()}.wav`,
+          lastModified: Date.now(),
+          webkitRelativePath: ''
+        }) as File;
+
         setSelectedFiles(prev => [...prev, audioFile]);
         stream.getTracks().forEach(track => track.stop());
       };
