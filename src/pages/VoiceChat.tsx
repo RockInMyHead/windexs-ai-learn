@@ -305,12 +305,22 @@ const VoiceChat = () => {
       console.log('🎙️ Speech recognition ended');
       setIsTranscribing(false);
 
-      // In continuous mode, onend usually means an error occurred
-      // Try to restart if we're still recording
-      if (isRecording) {
+      // In continuous mode, onend usually means an error occurred or intentional stop
+      // Only restart if we're still in recording state and not speaking (to avoid conflicts)
+      if (isRecording && !isSpeaking) {
         console.log('🔄 Перезапуск после неожиданной остановки...');
         setTimeout(() => {
-          startSpeechRecognition();
+          // Double-check we still want to be recording
+          if (speechRecognitionRef.current) {
+            try {
+              speechRecognitionRef.current.start();
+              console.log('✅ Перезапуск успешен');
+            } catch (e: any) {
+              if (e.name !== 'InvalidStateError') {
+                console.error('❌ Ошибка перезапуска:', e);
+              }
+            }
+          }
         }, 1000); // Longer delay for error recovery
       }
     };
@@ -334,19 +344,15 @@ const VoiceChat = () => {
     });
 
     try {
-      // Ensure recognition is stopped before starting
-      try {
-        speechRecognitionRef.current.stop();
-        console.log('🛑 Recognition остановлен перед перезапуском');
-      } catch (e) {
-        // Ignore if already stopped
-        console.log('🛑 Recognition уже остановлен');
-      }
-
       console.log('🎙️ Запуск распознавания речи...');
       speechRecognitionRef.current.start();
       console.log('✅ start() вызван успешно');
-    } catch (error) {
+    } catch (error: any) {
+      // Handle "already started" error gracefully
+      if (error.name === 'InvalidStateError') {
+        console.log('ℹ️ Распознавание речи уже запущено, продолжаем');
+        return;
+      }
       console.error('❌ Ошибка запуска speech recognition:', error);
       console.error('❌ Детали ошибки:', {
         message: error.message,
@@ -693,7 +699,8 @@ const VoiceChat = () => {
     setIsSpeaking(true);
 
     // Активировать распознавание речи для прерывания TTS (если микрофон включен)
-    if (isMicEnabled && !isRecording) {
+    // Пропускаем если уже записываем или используем fallback режим
+    if (isMicEnabled && !isRecording && !useFallbackTranscription && isWebSpeechAvailable()) {
       console.log('🎤 Включаю распознавание речи для прерывания TTS');
       try {
         if (!speechRecognitionRef.current) {
@@ -703,9 +710,18 @@ const VoiceChat = () => {
           }
         }
         if (speechRecognitionRef.current) {
-          speechRecognitionRef.current.start();
-          setIsRecording(true);
-          console.log('✅ Распознавание речи запущено для TTS прерывания');
+          // Безопасно пытаемся запустить, игнорируя ошибку если уже запущено
+          try {
+            speechRecognitionRef.current.start();
+            setIsRecording(true);
+            console.log('✅ Распознавание речи запущено для TTS прерывания');
+          } catch (startError: any) {
+            if (startError.name === 'InvalidStateError') {
+              console.log('ℹ️ Распознавание речи уже запущено');
+            } else {
+              throw startError;
+            }
+          }
         }
       } catch (error) {
         console.error('❌ Не удалось запустить распознавание речи:', error);
