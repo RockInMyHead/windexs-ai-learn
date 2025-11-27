@@ -67,32 +67,64 @@ const VoiceChat = () => {
 
   // Function to check if recognized text is an echo of the TTS output
   const isEchoOfTTS = (recognizedText: string): boolean => {
-    if (!currentTTSTextRef.current || !isSpeaking) return false;
-    
+    if (!currentTTSTextRef.current || !isSpeaking) {
+      console.log('🔇 isEchoOfTTS: TTS text is empty or not speaking', {
+        hasTTS: !!currentTTSTextRef.current,
+        isSpeaking,
+        recognizedText
+      });
+      return false;
+    }
+
     const normalizedRecognized = recognizedText.toLowerCase().trim();
     const normalizedTTS = currentTTSTextRef.current.toLowerCase();
-    
-    // Check if recognized text is contained in the TTS text (echo detection)
-    // Split TTS text into words and check if recognized text matches any portion
-    const ttsWords = normalizedTTS.split(/\s+/);
-    const recognizedWords = normalizedRecognized.split(/\s+/);
-    
-    // If recognized text is very short (1-2 words) and appears in TTS, it's likely echo
-    if (recognizedWords.length <= 3) {
+
+    console.log('🔍 Checking for TTS echo:', {
+      recognized: normalizedRecognized,
+      tts: normalizedTTS.substring(0, 100) + '...',
+      isSpeaking
+    });
+
+    // More aggressive echo detection: check if recognized text appears anywhere in TTS
+    if (normalizedRecognized.length > 3) {
+      // Remove punctuation and extra spaces for better matching
+      const cleanRecognized = normalizedRecognized.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
+      const cleanTTS = normalizedTTS.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
+
+      // Check if recognized text is contained in TTS text (with fuzzy matching)
+      if (cleanTTS.includes(cleanRecognized)) {
+        console.log('🔇 Обнаружена фраза эхо TTS, игнорируем:', normalizedRecognized);
+        return true;
+      }
+
+      // Check if most words from recognized text appear in TTS
+      const recognizedWords = cleanRecognized.split(/\s+/);
+      const ttsWords = cleanTTS.split(/\s+/);
+      let matchingWords = 0;
+
       for (const word of recognizedWords) {
-        if (word.length > 2 && normalizedTTS.includes(word)) {
-          console.log('🔇 Обнаружено эхо TTS, игнорируем:', normalizedRecognized);
-          return true;
+        if (word.length > 2 && ttsWords.includes(word)) {
+          matchingWords++;
         }
       }
+
+      // If 70% or more words match, it's likely echo
+      const matchRatio = matchingWords / recognizedWords.length;
+      if (matchRatio >= 0.7 && recognizedWords.length >= 3) {
+        console.log('🔇 Обнаружено эхо TTS по словам, игнорируем:', normalizedRecognized, `(match ratio: ${(matchRatio * 100).toFixed(1)}%)`);
+        return true;
+      }
     }
-    
-    // Check if the recognized phrase appears in the TTS text
-    if (normalizedRecognized.length > 3 && normalizedTTS.includes(normalizedRecognized)) {
-      console.log('🔇 Обнаружена фраза эхо TTS, игнорируем:', normalizedRecognized);
-      return true;
+
+    // If recognized text is very short (1-3 words) and appears in TTS, it's likely echo
+    if (normalizedRecognized.length <= 20) { // Short phrases
+      if (normalizedTTS.includes(normalizedRecognized)) {
+        console.log('🔇 Обнаружено короткое эхо TTS, игнорируем:', normalizedRecognized);
+        return true;
+      }
     }
-    
+
+    console.log('✅ Текст не является эхом TTS');
     return false;
   };
 
@@ -143,7 +175,7 @@ const VoiceChat = () => {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
 
-      const response = await fetch('https://teacher.windexs.ru/api/transcribe', {
+      const response = await fetch('http://localhost:3001/api/transcribe', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -305,6 +337,17 @@ const VoiceChat = () => {
           stopCurrentTTS();
           // Очистить текст после прерывания, чтобы предотвратить ложные срабатывания
           currentTTSTextRef.current = '';
+
+          // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
+          if (speechRecognitionRef.current && isRecording) {
+            try {
+              speechRecognitionRef.current.stop();
+              setIsRecording(false);
+              console.log('🎤 Распознавание речи остановлено после прерывания TTS');
+            } catch (e) {
+              console.log('⚠️ Ошибка остановки распознавания:', e);
+            }
+          }
         }
       }
 
@@ -600,7 +643,7 @@ const VoiceChat = () => {
   // Get user profile from API
   const getUserProfile = useCallback(async () => {
     try {
-      const response = await fetch('https://teacher.windexs.ru/api/profile', {
+      const response = await fetch('http://localhost:3001/api/profile', {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -687,13 +730,13 @@ const VoiceChat = () => {
 
       // Send raw user message to server API
       console.log('🚀 Отправка в VoiceChat:', {
-        url: `https://teacher.windexs.ru/api/chat/${courseId}/message`,
+        url: `http://localhost:3001/api/chat/${courseId}/message`,
         content: messageContent,
         messageType: 'voice',
         token: token ? 'present' : 'missing'
       });
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+      const response = await fetch(`http://localhost:3001/api/chat/${courseId}/message`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -775,18 +818,21 @@ const VoiceChat = () => {
           }
         }
         if (speechRecognitionRef.current) {
-          // Безопасно пытаемся запустить, игнорируя ошибку если уже запущено
-          try {
-            speechRecognitionRef.current.start();
-            setIsRecording(true);
-            console.log('✅ Распознавание речи запущено для TTS прерывания');
-          } catch (startError: any) {
-            if (startError.name === 'InvalidStateError') {
-              console.log('ℹ️ Распознавание речи уже запущено');
-            } else {
-              throw startError;
+          // Небольшая задержка, чтобы TTS успел начать играть и не было ложных срабатываний
+          setTimeout(() => {
+            // Безопасно пытаемся запустить, игнорируя ошибку если уже запущено
+            try {
+              speechRecognitionRef.current?.start();
+              setIsRecording(true);
+              console.log('✅ Распознавание речи запущено для TTS прерывания');
+            } catch (startError: any) {
+              if (startError.name === 'InvalidStateError') {
+                console.log('ℹ️ Распознавание речи уже запущено');
+              } else {
+                console.log('❌ Ошибка запуска распознавания:', startError);
+              }
             }
-          }
+          }, 500); // 500ms delay
         }
       } catch (error) {
         console.error('❌ Не удалось запустить распознавание речи:', error);
@@ -796,7 +842,7 @@ const VoiceChat = () => {
     try {
       console.log('🔊 Отправка текста в OpenAI TTS...');
 
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch('http://localhost:3001/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
