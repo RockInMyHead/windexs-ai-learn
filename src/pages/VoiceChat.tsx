@@ -79,7 +79,7 @@ const VoiceChat = () => {
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  // ПРОСТАЯ функция обнаружения эха TTS: точное соответствие слову за словом
+  // УМНАЯ функция обнаружения эха TTS: проверка схожести текстов
   const isEchoOfTTS = useCallback((recognizedText: string, confidence = 0) => {
     if (!currentTTSTextRef.current) {
       return false;
@@ -88,18 +88,52 @@ const VoiceChat = () => {
     const normalizedRecognized = recognizedText.toLowerCase().trim();
     const ttsText = currentTTSTextRef.current.toLowerCase();
 
-    // ПРОСТОЕ ПРАВИЛО: если распознанный текст точно соответствует TTS (или является его частью) - это эхо
-    const isEcho = ttsText.includes(normalizedRecognized) && normalizedRecognized.length > 0;
+    // УБИРАЕМ пунктуацию и лишние символы для чистого сравнения
+    const cleanRecognized = normalizedRecognized.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+    const cleanTts = ttsText.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
 
-    if (isEcho && ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
-      console.log('🔇 ЭХО TTS обнаружено (точное соответствие):', {
-        recognized: normalizedRecognized,
-        ttsText: ttsText.substring(0, 100) + '...',
-        isEcho
+    // Проверяем точное совпадение (после очистки)
+    const isExactMatch = cleanTts === cleanRecognized || cleanTts.includes(cleanRecognized) || cleanRecognized.includes(cleanTts);
+
+    // Если тексты очень похожи по длине, проверяем совпадение слов
+    if (!isExactMatch && Math.abs(cleanRecognized.length - cleanTts.length) < 50) {
+      const recognizedWords = cleanRecognized.split(/\s+/).filter(word => word.length > 2);
+      const ttsWords = cleanTts.split(/\s+/).filter(word => word.length > 2);
+
+      if (recognizedWords.length > 3 && ttsWords.length > 3) {
+        // Считаем сколько слов совпадает
+        const matchingWords = recognizedWords.filter(word =>
+          ttsWords.some(ttsWord => ttsWord.includes(word) || word.includes(ttsWord))
+        ).length;
+
+        const matchRatio = Math.max(
+          matchingWords / recognizedWords.length,
+          matchingWords / ttsWords.length
+        );
+
+        // Если совпадает более 80% слов - считаем эхом
+        if (matchRatio > 0.8) {
+          if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+            console.log('🔇 ЭХО TTS обнаружено (высокое совпадение слов):', {
+              recognized: cleanRecognized.substring(0, 100) + '...',
+              ttsText: cleanTts.substring(0, 100) + '...',
+              matchRatio: matchRatio.toFixed(2),
+              matchingWords: `${matchingWords}/${Math.max(recognizedWords.length, ttsWords.length)}`
+            });
+          }
+          return true;
+        }
+      }
+    }
+
+    if (isExactMatch && ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+      console.log('🔇 ЭХО TTS обнаружено (точное совпадение):', {
+        recognized: cleanRecognized.substring(0, 100) + '...',
+        ttsText: cleanTts.substring(0, 100) + '...'
       });
     }
 
-    return isEcho;
+    return isExactMatch;
   }, [currentTTSTextRef]);
 
   // Function to stop current TTS playback
