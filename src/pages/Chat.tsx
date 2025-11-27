@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Sparkles, Loader2, Paperclip, Image, Camera, Volume2, VolumeX } from "lucide-react";
+import { Send, Sparkles, Loader2, Paperclip, Image, Camera, Volume2, VolumeX, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -31,6 +31,7 @@ const Chat = () => {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<number | null>(null);
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -118,13 +119,19 @@ const Chat = () => {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    sendMessage(inputValue);
+    if (inputValue.trim()) {
+      sendMessage(inputValue);
+    } else {
+      handleButtonClick();
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendMessage(inputValue);
+      if (inputValue.trim()) {
+        sendMessage(inputValue);
+      }
     }
   };
 
@@ -145,6 +152,38 @@ const Chat = () => {
     setSelectedFile(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Здесь можно добавить логику записи аудио
+      // Пока просто установим состояние
+      setIsRecording(true);
+      console.log('Recording started...');
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+    }
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    console.log('Recording stopped');
+    // Здесь можно добавить логику обработки записанного аудио
+  };
+
+  const handleButtonClick = () => {
+    if (inputValue.trim()) {
+      // Если есть текст - отправляем сообщение
+      sendMessage(inputValue);
+    } else {
+      // Если поле пустое - начинаем/останавливаем запись
+      if (isRecording) {
+        stopRecording();
+      } else {
+        startRecording();
+      }
     }
   };
 
@@ -402,18 +441,26 @@ const Chat = () => {
                   onKeyPress={handleKeyPress}
                   placeholder="Напиши свой вопрос..."
                   className="flex-1"
-                  disabled={isLoading}
+                  disabled={isLoading || isRecording}
                 />
 
                 <Button
-                  type="submit"
-                  disabled={(!inputValue.trim() && !selectedFile) || isLoading}
-                  className="px-6"
+                  type="button"
+                  onClick={handleButtonClick}
+                  disabled={isLoading}
+                  className={`px-6 ${isRecording ? 'bg-red-500 hover:bg-red-600' : ''}`}
                 >
                   {isLoading ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
+                  ) : inputValue.trim() ? (
                     <Send className="w-4 h-4" />
+                  ) : isRecording ? (
+                    <div className="flex items-center gap-1">
+                      <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                      <Mic className="w-4 h-4" />
+                    </div>
+                  ) : (
+                    <Mic className="w-4 h-4" />
                   )}
                 </Button>
               </form>
