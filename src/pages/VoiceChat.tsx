@@ -464,7 +464,7 @@ const VoiceChat = () => {
         }
       }
     }
-  }, [isRecording, initializeSpeechRecognition, startSpeechRecognition, isMicEnabled, toast, useFallbackTranscription, isWebSpeechAvailable, startFallbackRecording, stopFallbackRecording, stopCurrentTTS, sendToLLM, speakText]);
+  }, [isRecording, isMicEnabled, toast]);
 
   // Toggle microphone
   const handleToggleMic = useCallback(() => {
@@ -686,7 +686,7 @@ const VoiceChat = () => {
     } finally {
       setIsGeneratingResponse(false);
     }
-  }, [token, userProfile, courseId, getUserProfile, isSpeaking]);
+  }, [token, userProfile, courseId, getUserProfile]);
 
   // Convert text to speech using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
