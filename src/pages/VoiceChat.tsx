@@ -480,7 +480,7 @@ const VoiceChat = () => {
         console.log('🎯 Окончательный текст для обработки:', transcriptToProcess);
 
 
-        if (transcript) {
+        if (transcriptToProcess) {
           // 100% ЗАЩИТА ОТ ЭХА TTS: проверяем ВСЕ финальные результаты на эхо
           if (currentTTSTextRef.current) {
             const normalizedTranscript = transcript.toLowerCase().trim();
