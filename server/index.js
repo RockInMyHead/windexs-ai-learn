@@ -1597,7 +1597,7 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
       voice: voice, // Options: alloy, echo, fable, onyx, nova, shimmer
       input: text.trim(),
       response_format: "mp3",
-      speed: 1.2  // Увеличена скорость для естественной речи
+      speed: 1.0  // Обычная скорость для комфортного прослушивания
     });
 
     // Convert response to buffer
