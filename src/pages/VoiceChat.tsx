@@ -8,6 +8,12 @@ import { Badge } from "@/components/ui/badge";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import {
+  TTSEchoDetector,
+  TextCorrelationDetector,
+  SimpleMLEchoDetector,
+  ECHO_DETECTION_CONFIG
+} from "@/utils/echoDetection";
 
 // Web Speech API types
 interface SpeechRecognitionEvent extends Event {
@@ -55,6 +61,11 @@ const VoiceChat = () => {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
 
+  // Детекторы эха TTS
+  const [ttsEchoDetector] = useState(() => new TTSEchoDetector());
+  const [textCorrelationDetector] = useState(() => new TextCorrelationDetector());
+  const [mlEchoDetector] = useState(() => new SimpleMLEchoDetector());
+
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
@@ -65,68 +76,81 @@ const VoiceChat = () => {
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Function to check if recognized text is an echo of the TTS output
-  const isEchoOfTTS = (recognizedText: string): boolean => {
+  // Умная функция обнаружения эха TTS с многоуровневым анализом
+  const isEchoOfTTS = useCallback((recognizedText: string, confidence = 0) => {
     if (!currentTTSTextRef.current || !isSpeaking) {
-      console.log('🔇 isEchoOfTTS: TTS text is empty or not speaking', {
-        hasTTS: !!currentTTSTextRef.current,
-        isSpeaking,
-        recognizedText
-      });
+      if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+        console.log('🔇 Echo check: No active TTS', {
+          hasTTS: !!currentTTSTextRef.current,
+          isSpeaking,
+          recognizedText
+        });
+      }
       return false;
     }
 
     const normalizedRecognized = recognizedText.toLowerCase().trim();
-    const normalizedTTS = currentTTSTextRef.current.toLowerCase();
 
-    console.log('🔍 Checking for TTS echo:', {
-      recognized: normalizedRecognized,
-      tts: normalizedTTS.substring(0, 100) + '...',
-      isSpeaking
-    });
+    if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+      console.log('🎯 Starting echo detection analysis:', {
+        recognized: normalizedRecognized,
+        confidence,
+        isSpeaking
+      });
+    }
 
-    // More aggressive echo detection: check if recognized text appears anywhere in TTS
-    if (normalizedRecognized.length > 3) {
-      // Remove punctuation and extra spaces for better matching
-      const cleanRecognized = normalizedRecognized.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
-      const cleanTTS = normalizedTTS.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ');
-
-      // Check if recognized text is contained in TTS text (with fuzzy matching)
-      if (cleanTTS.includes(cleanRecognized)) {
-        console.log('🔇 Обнаружена фраза эхо TTS, игнорируем:', normalizedRecognized);
-        return true;
-      }
-
-      // Check if most words from recognized text appear in TTS
-      const recognizedWords = cleanRecognized.split(/\s+/);
-      const ttsWords = cleanTTS.split(/\s+/);
-      let matchingWords = 0;
-
-      for (const word of recognizedWords) {
-        if (word.length > 2 && ttsWords.includes(word)) {
-          matchingWords++;
+    // 1. Частотный анализ (если поддерживается)
+    let frequencySimilarity = 0;
+    if (ECHO_DETECTION_CONFIG.ENABLE_FREQUENCY_ANALYSIS) {
+      try {
+        const audioData = new Uint8Array(ttsEchoDetector.analyser?.frequencyBinCount || 0);
+        if (ttsEchoDetector.analyser) {
+          ttsEchoDetector.analyser.getByteFrequencyData(audioData);
+          const isFreqSimilar = ttsEchoDetector.isSimilarToTTSProfile(audioData);
+          frequencySimilarity = isFreqSimilar ? 1 : 0;
         }
-      }
-
-      // If 70% or more words match, it's likely echo
-      const matchRatio = matchingWords / recognizedWords.length;
-      if (matchRatio >= 0.7 && recognizedWords.length >= 3) {
-        console.log('🔇 Обнаружено эхо TTS по словам, игнорируем:', normalizedRecognized, `(match ratio: ${(matchRatio * 100).toFixed(1)}%)`);
-        return true;
+      } catch (error) {
+        console.warn('⚠️ Frequency analysis failed:', error);
       }
     }
 
-    // If recognized text is very short (1-3 words) and appears in TTS, it's likely echo
-    if (normalizedRecognized.length <= 20) { // Short phrases
-      if (normalizedTTS.includes(normalizedRecognized)) {
-        console.log('🔇 Обнаружено короткое эхо TTS, игнорируем:', normalizedRecognized);
-        return true;
-      }
+    // 2. Текстовая корреляция
+    const textSimilarity = textCorrelationDetector.calculateTextSimilarity(normalizedRecognized);
+
+    // 3. ML классификация (если включена)
+    let isMLEcho = false;
+    if (ECHO_DETECTION_CONFIG.ENABLE_ML_CLASSIFICATION) {
+      isMLEcho = mlEchoDetector.classifyEcho(
+        normalizedRecognized,
+        confidence,
+        frequencySimilarity,
+        textSimilarity
+      );
     }
 
-    console.log('✅ Текст не является эхом TTS');
-    return false;
-  };
+    // Взвешенное решение
+    const totalScore = (
+      textSimilarity * ECHO_DETECTION_CONFIG.FEATURE_WEIGHTS.textCorrelation +
+      frequencySimilarity * ECHO_DETECTION_CONFIG.FEATURE_WEIGHTS.frequencyAnalysis +
+      (isMLEcho ? 1 : 0) * ECHO_DETECTION_CONFIG.FEATURE_WEIGHTS.mlClassification
+    );
+
+    const isEcho = totalScore > ECHO_DETECTION_CONFIG.TEXT_SIMILARITY_THRESHOLD;
+
+    if (ECHO_DETECTION_CONFIG.LOG_ECHO_DETECTION) {
+      console.log('🎯 Echo detection result:', {
+        text: normalizedRecognized,
+        textSim: textSimilarity.toFixed(3),
+        freqSim: frequencySimilarity.toFixed(3),
+        mlEcho: isMLEcho,
+        totalScore: totalScore.toFixed(3),
+        threshold: ECHO_DETECTION_CONFIG.TEXT_SIMILARITY_THRESHOLD,
+        isEcho
+      });
+    }
+
+    return isEcho;
+  }, [currentTTSTextRef, isSpeaking, ttsEchoDetector, textCorrelationDetector, mlEchoDetector]);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
@@ -335,8 +359,8 @@ const VoiceChat = () => {
           console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
           console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
           stopCurrentTTS();
-          // Очистить текст после прерывания, чтобы предотвратить ложные срабатывания
-          currentTTSTextRef.current = '';
+          // Очистить состояние TTS после прерывания
+          clearTTSState();
 
           // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
           if (speechRecognitionRef.current && isRecording) {
@@ -363,8 +387,8 @@ const VoiceChat = () => {
         }
 
         if (transcript) {
-          // Clear TTS text ref since user is actually speaking
-          currentTTSTextRef.current = '';
+          // Clear TTS state since user is actually speaking
+          clearTTSState();
           
           // Double-check TTS is stopped
           if (isSpeaking) {
@@ -793,6 +817,13 @@ const VoiceChat = () => {
     }
   }, [token, userProfile, courseId, getUserProfile]);
 
+  // Синхронная очистка состояния TTS для всех детекторов
+  const clearTTSState = useCallback(() => {
+    currentTTSTextRef.current = '';
+    textCorrelationDetector.clearTTSText();
+    setIsSpeaking(false);
+  }, [textCorrelationDetector]);
+
   // Convert text to speech using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
     // Don't speak if sound is disabled
@@ -801,9 +832,10 @@ const VoiceChat = () => {
       return;
     }
 
-    // Store the TTS text for echo detection
+    // Store the TTS text for all echo detectors
     currentTTSTextRef.current = text;
-    
+    textCorrelationDetector.setTTSText(text);
+
     setIsSpeaking(true);
 
     // Активировать распознавание речи для прерывания TTS (если микрофон включен)
@@ -818,7 +850,7 @@ const VoiceChat = () => {
           }
         }
         if (speechRecognitionRef.current) {
-          // Небольшая задержка, чтобы TTS успел начать играть и не было ложных срабатываний
+          // Задержка перед запуском распознавания для предотвращения эха TTS
           setTimeout(() => {
             // Безопасно пытаемся запустить, игнорируя ошибку если уже запущено
             try {
@@ -832,7 +864,7 @@ const VoiceChat = () => {
                 console.log('❌ Ошибка запуска распознавания:', startError);
               }
             }
-          }, 500); // 500ms delay
+          }, ECHO_DETECTION_CONFIG.SPEECH_RECOGNITION_DELAY); // Задержка из конфига
         }
       } catch (error) {
         console.error('❌ Не удалось запустить распознавание речи:', error);
@@ -863,6 +895,9 @@ const VoiceChat = () => {
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
+      // Capture TTS frequency profile for echo detection
+      ttsEchoDetector.captureTTSProfile(audioBlob);
+
       // ОБЯЗАТЕЛЬНО остановить предыдущее аудио перед запуском нового
       // Это предотвращает наложение нескольких TTS потоков
       if (currentAudioRef.current) {
@@ -886,23 +921,11 @@ const VoiceChat = () => {
         console.log('✅ Озвучка завершена');
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
-        currentTTSTextRef.current = ''; // Clear TTS text for echo detection
+        clearTTSState(); // Clear TTS state for echo detection
         setIsSpeaking(false);
 
-        // Перезапускаем распознавание речи после завершения TTS, если мы все еще в режиме записи
-        if (isRecording && speechRecognitionRef.current) {
-          console.log('🎤 Перезапуск распознавания речи после завершения TTS');
-          try {
-            speechRecognitionRef.current.start();
-            console.log('✅ Распознавание речи перезапущено успешно');
-          } catch (e: any) {
-            if (e.name !== 'InvalidStateError') {
-              console.error('❌ Ошибка перезапуска распознавания речи:', e);
-            }
-          }
-        } else {
-          console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
-        }
+        // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
+        console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
       };
 
       audio.onerror = (event) => {
@@ -954,6 +977,21 @@ const VoiceChat = () => {
       });
     }
   }, [token, toast, isSoundEnabled, stopCurrentTTS]);
+
+  // Initialize echo detection system
+  useEffect(() => {
+    const initEchoDetection = async () => {
+      await ttsEchoDetector.initialize();
+      console.log('🎯 Echo detection system initialized');
+    };
+
+    initEchoDetection();
+
+    // Cleanup on unmount
+    return () => {
+      ttsEchoDetector.cleanup?.();
+    };
+  }, []);
 
   // Load user profile on component mount
   useEffect(() => {
