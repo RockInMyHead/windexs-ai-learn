@@ -314,11 +314,8 @@ const VoiceChat = () => {
 
       const result = event.results[event.results.length - 1]; // Get the last result
 
-      // ВАЖНО: Во время активного TTS или сразу после окончания проверяем ВСЕ распознавания на эхо
-      const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
-      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 8000 && timeSinceTTSEnd >= 0; // Уменьшаем до 8 секунд
-
-      if (!result.isFinal && (isSpeaking || currentAudioRef.current || isRecentlyAfterTTS)) {
+      // Обрабатываем interim результаты всегда, но проверяем на эхо TTS
+      if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
 
         // СТРОГАЯ ПРОВЕРКА: если TTS активен или недавно закончился, проверяем ВСЕ распознавания на эхо
@@ -331,7 +328,7 @@ const VoiceChat = () => {
 
 
           // Только если это НЕ эхо и уверенность очень высокая - прерываем
-          if (result[0].confidence > 0.95 && interimTranscript.length > 5 && !isRecentlyAfterTTS) {
+          if (result[0].confidence > 0.95 && interimTranscript.length > 5) {
             console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
             console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
             stopCurrentTTS();
@@ -348,13 +345,9 @@ const VoiceChat = () => {
                 console.log('⚠️ Ошибка остановки распознавания:', e);
               }
             }
-          } else {
-            // Низкая уверенность или короткий текст во время/после TTS - игнорируем
-            if (isSpeaking || isRecentlyAfterTTS) {
-              console.log('🔇 Игнорируем неопределенное распознавание во время/после TTS:', interimTranscript);
-              return;
-            }
           }
+          // УБРАНА блокировка всех interim результатов во время/после TTS
+          // Теперь проверка на эхо происходит только через isEchoOfTTS выше
         }
       }
 
