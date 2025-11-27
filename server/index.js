@@ -1242,11 +1242,29 @@ app.get('/api/chat/general/history', authenticateToken, (req, res) => {
   }
 });
 
-app.post('/api/chat/general', authenticateToken, upload.single('audio'), async (req, res) => {
+app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
   try {
     console.log('🤖 Новый запрос к общему AI чату');
-    console.log('👤 User ID:', req.user?.userId);
-    console.log('📋 Headers:', req.headers.authorization ? 'Token present' : 'No token');
+
+    // Extract token from form data or headers
+    let token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
+    console.log('🔑 Token:', token ? 'present' : 'missing');
+
+    if (!token) {
+      console.log('❌ Токен не найден');
+      return res.status(401).json({ error: 'Токен не найден' });
+    }
+
+    // Verify token manually
+    let userId;
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      userId = decoded.userId;
+      console.log('👤 User ID:', userId);
+    } catch (tokenError) {
+      console.log('❌ Недействительный токен');
+      return res.status(401).json({ error: 'Недействительный токен' });
+    }
 
     let content, messageType = 'text';
 
@@ -1280,16 +1298,13 @@ app.post('/api/chat/general', authenticateToken, upload.single('audio'), async (
     } else {
       // Handle text messages (JSON)
       console.log('💬 Текстовое сообщение получено');
-      const bodyData = req.body;
-      content = bodyData.content || bodyData.text;
+      content = req.body.content || req.body.text;
 
       if (!content || !content.trim()) {
         console.log('❌ Контент пустой');
         return res.status(400).json({ error: 'Сообщение не может быть пустым' });
       }
     }
-
-    const userId = req.user.userId;
 
     // Universal teacher prompt
     const systemPrompt = `Ты - Юлия, универсальный AI-учитель. Ты помогаешь людям изучать любые темы и предметы.

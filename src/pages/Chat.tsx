@@ -135,14 +135,12 @@ const Chat = () => {
       const formData = new FormData();
       formData.append('audio', audioFile);
       formData.append('messageType', 'voice');
+      formData.append('token', token); // Отправляем токен как поле формы
 
       console.log('🎤 Sending voice message to server...');
 
       const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
         body: formData
       });
 
