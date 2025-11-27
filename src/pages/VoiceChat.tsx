@@ -259,10 +259,10 @@ const VoiceChat = () => {
       if (!result.isFinal && (isSpeaking || currentAudioRef.current)) {
         const interimTranscript = result[0].transcript.trim();
 
-        // Прерывать даже при коротких звуках (чтобы реагировать быстрее)
-        if (interimTranscript.length > 0 || result[0].confidence > 0.3) {
+        // Более консервативная логика прерывания (только при уверенном распознавании)
+        if (interimTranscript.length > 2 && result[0].confidence > 0.7) {
           console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
-          console.log('📝 Interim transcript:', interimTranscript);
+          console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
           stopCurrentTTS();
         }
       }
