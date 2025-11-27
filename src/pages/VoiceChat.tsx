@@ -74,6 +74,12 @@ const VoiceChat = () => {
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
   const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
   const ttsFingerprintRef = useRef<Float32Array | null>(null); // Store spectral fingerprint of current TTS audio
+
+  // Audio level monitoring for TTS interruption
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioLevelIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -176,6 +182,70 @@ const VoiceChat = () => {
       } catch (error) {
       console.warn('⚠️ Failed to compute TTS fingerprint:', error);
       return null;
+    }
+  }, []);
+
+  // Initialize audio level monitoring
+  const initializeAudioMonitoring = useCallback(async () => {
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+        analyserRef.current.smoothingTimeConstant = 0.3;
+      }
+
+      if (!microphoneRef.current) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        microphoneRef.current = audioContextRef.current.createMediaStreamSource(stream);
+        microphoneRef.current.connect(analyserRef.current);
+      }
+
+      console.log('🎵 Audio monitoring initialized');
+    } catch (error) {
+      console.warn('⚠️ Failed to initialize audio monitoring:', error);
+    }
+  }, []);
+
+  // Monitor audio level and interrupt TTS if user speaks
+  const monitorAudioLevel = useCallback(() => {
+    if (!analyserRef.current || !isSpeaking) return;
+
+    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(dataArray);
+
+    // Calculate RMS (Root Mean Square) as audio level
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) {
+      sum += dataArray[i] * dataArray[i];
+    }
+    const rms = Math.sqrt(sum / dataArray.length);
+
+    // If audio level is high enough, interrupt TTS
+    if (rms > 30) { // Adjustable threshold
+      console.log('🗣️ Detected user speech via audio monitoring, interrupting TTS...');
+      console.log('📊 Audio level:', rms.toFixed(2));
+      stopCurrentTTS();
+      clearTTSState();
+    }
+  }, [isSpeaking]);
+
+  // Start audio level monitoring when TTS starts
+  const startAudioMonitoring = useCallback(() => {
+    if (audioLevelIntervalRef.current) {
+      clearInterval(audioLevelIntervalRef.current);
+    }
+
+    audioLevelIntervalRef.current = setInterval(monitorAudioLevel, 100); // Check every 100ms
+    console.log('🎤 Started audio level monitoring');
+  }, [monitorAudioLevel]);
+
+  // Stop audio level monitoring
+  const stopAudioMonitoring = useCallback(() => {
+    if (audioLevelIntervalRef.current) {
+      clearInterval(audioLevelIntervalRef.current);
+      audioLevelIntervalRef.current = null;
+      console.log('🎤 Stopped audio level monitoring');
     }
   }, []);
 
@@ -314,7 +384,9 @@ const VoiceChat = () => {
   }
 
   setIsSpeaking(false);
-}, []);
+  // Stop audio monitoring when TTS is interrupted
+  stopAudioMonitoring();
+}, [stopAudioMonitoring]);
 
   // Check if Web Speech API is available
   const isWebSpeechAvailable = useCallback(() => {
@@ -483,24 +555,25 @@ const VoiceChat = () => {
 
         // ПРЕРЫВАНИЕ TTS: проверяем на наличие речи для прерывания ПЕРЕД проверкой на эхо
         if (interimTranscript.length > 2) {
-          // ПРЕРЫВАНИЕ TTS: если есть речь во время TTS - немедленно прерываем
-          if (isSpeaking && result[0].confidence > 0.7) {
+        // ПРЕРЫВАНИЕ TTS: если есть речь во время TTS - немедленно прерываем
+        // Делаем еще более чувствительным - даже низкая уверенность
+        if (isSpeaking && result[0].confidence > 0.3 && interimTranscript.length > 1) {
             console.log('🛑 Обнаружена речь пользователя во время активного TTS, останавливаю TTS...');
-            console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
-            stopCurrentTTS();
-            // Очистить состояние TTS после прерывания
-            clearTTSState();
+          console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
+          stopCurrentTTS();
+          // Очистить состояние TTS после прерывания
+          clearTTSState();
 
-            // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
-            if (speechRecognitionRef.current && isRecording) {
-              try {
-                speechRecognitionRef.current.stop();
-                setIsRecording(false);
-                console.log('🎤 Распознавание речи остановлено после прерывания TTS');
-              } catch (e) {
-                console.log('⚠️ Ошибка остановки распознавания:', e);
-              }
+          // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
+          if (speechRecognitionRef.current && isRecording) {
+            try {
+              speechRecognitionRef.current.stop();
+              setIsRecording(false);
+              console.log('🎤 Распознавание речи остановлено после прерывания TTS');
+            } catch (e) {
+              console.log('⚠️ Ошибка остановки распознавания:', e);
             }
+          }
             return; // Прерываем обработку после остановки TTS
           }
 
@@ -1111,6 +1184,10 @@ const VoiceChat = () => {
       // Event handlers
       audio.onplay = () => {
         console.log('🔊 Озвучка начата');
+        // Start monitoring for user speech to interrupt TTS
+        initializeAudioMonitoring().then(() => {
+          startAudioMonitoring();
+        });
       };
 
       audio.onended = () => {
@@ -1118,6 +1195,8 @@ const VoiceChat = () => {
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
         setIsSpeaking(false);
+        // Stop audio monitoring
+        stopAudioMonitoring();
         // Запоминаем время окончания TTS для обнаружения эха
         lastTTSEndTimeRef.current = Date.now();
 
