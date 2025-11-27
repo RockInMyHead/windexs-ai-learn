@@ -36,6 +36,8 @@ const Chat = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -47,12 +49,20 @@ const Chat = () => {
     }
   }, [messages]);
 
-  // Cleanup camera stream and audio on unmount
+  // Cleanup camera stream, audio recording and audio playback on unmount
   useEffect(() => {
     return () => {
+      // Stop camera stream
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
       }
+
+      // Stop audio recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+
+      // Stop audio playback
       if (currentAudio) {
         currentAudio.pause();
         currentAudio.currentTime = 0;
@@ -117,6 +127,65 @@ const Chat = () => {
     }
   };
 
+  const sendVoiceMessage = async (audioFile: File) => {
+    try {
+      setIsLoading(true);
+
+      // Создаем FormData для отправки файла
+      const formData = new FormData();
+      formData.append('audio', audioFile);
+      formData.append('messageType', 'voice');
+
+      console.log('🎤 Sending voice message to server...');
+
+      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      // Добавляем сообщение пользователя (голосовое)
+      const userMessage: Message = {
+        role: 'user',
+        content: '🎤 Голосовое сообщение',
+        timestamp: new Date(),
+        file: audioFile
+      };
+
+      // Добавляем ответ AI
+      const aiMessage: Message = {
+        role: 'ai',
+        content: data.message,
+        timestamp: new Date()
+      };
+
+      setMessages(prev => [...prev, userMessage, aiMessage]);
+
+      // Очищаем поле ввода
+      setInputValue('');
+      setSelectedFile(null);
+
+    } catch (error) {
+      console.error('❌ Voice message error:', error);
+      const errorMessage: Message = {
+        role: 'ai',
+        content: 'Извини, не удалось обработать голосовое сообщение. Попробуй еще раз.',
+        timestamp: new Date()
+      };
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputValue.trim()) {
@@ -132,6 +201,9 @@ const Chat = () => {
       if (inputValue.trim()) {
         sendMessage(inputValue);
       }
+    } else if (e.key === 'Escape' && isRecording) {
+      // Останавливаем запись по Escape
+      stopRecording();
     }
   };
 
@@ -157,20 +229,56 @@ const Chat = () => {
 
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Здесь можно добавить логику записи аудио
-      // Пока просто установим состояние
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          sampleRate: 44100,
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+
+      audioChunksRef.current = [];
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioFile = new File([audioBlob], `voice-message-${Date.now()}.webm`, { type: 'audio/webm' });
+
+        // Останавливаем все треки стрима
+        stream.getTracks().forEach(track => track.stop());
+
+        // Отправляем аудио сообщение
+        sendVoiceMessage(audioFile);
+      };
+
+      mediaRecorder.start();
       setIsRecording(true);
-      console.log('Recording started...');
+      console.log('🎤 Recording started...');
+
     } catch (error) {
-      console.error('Error accessing microphone:', error);
+      console.error('❌ Error accessing microphone:', error);
+      alert('Не удалось получить доступ к микрофону. Проверьте разрешения.');
     }
   };
 
   const stopRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
+      console.log('🎤 Recording stopped');
+    }
     setIsRecording(false);
-    console.log('Recording stopped');
-    // Здесь можно добавить логику обработки записанного аудио
   };
 
   const handleButtonClick = () => {
@@ -304,6 +412,18 @@ const Chat = () => {
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
+
+      {/* Recording indicator */}
+      {isRecording && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50">
+          <div className="bg-red-500 text-white px-4 py-2 rounded-full shadow-lg flex items-center gap-2 animate-pulse">
+            <div className="w-3 h-3 bg-white rounded-full animate-ping"></div>
+            <span className="text-sm font-medium">🎤 Запись...</span>
+            <span className="text-xs opacity-75">(ESC для отмены)</span>
+          </div>
+        </div>
+      )}
+
       <main className="container mx-auto px-4 pt-24 pb-4">
         <div className="max-w-4xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
           <Card className="flex-1 flex flex-col overflow-hidden">
