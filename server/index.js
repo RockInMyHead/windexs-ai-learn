@@ -926,8 +926,9 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
       // Handle text messages (JSON)
       console.log('💬 Текстовое сообщение получено');
       content = req.body.content;
+      messageType = req.body.messageType || 'text';
       console.log('💬 Content:', content);
-      console.log('🎤 Message Type:', req.body.messageType);
+      console.log('🎤 Message Type:', messageType);
 
       if (!content || !content.trim()) {
         console.log('❌ Контент пустой');
