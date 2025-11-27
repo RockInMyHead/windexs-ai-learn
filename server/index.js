@@ -42,8 +42,8 @@ const PORT = 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'windexs-ai-learn-secret-key-2024';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
-// Proxy configuration (disabled for testing)
-const PROXY_ENABLED = process.env.PROXY_ENABLED === 'true';
+// Proxy configuration (enabled by default)
+const PROXY_ENABLED = process.env.PROXY_ENABLED !== 'false';
 const PROXY_HOST = process.env.PROXY_HOST || '185.68.187.20';
 const PROXY_PORT = process.env.PROXY_PORT || '8000';
 const PROXY_USERNAME = process.env.PROXY_USERNAME || 'rBD9e6';
