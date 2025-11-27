@@ -1048,8 +1048,8 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
         const assistantMessageId = uuidv4();
         db.prepare(`
           INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type, tokens_used)
-          VALUES (?, ?, ?, 'assistant', ?, 'text', ?)
-        `).run(assistantMessageId, userId, courseId, fullResponse, tokensUsed);
+          VALUES (?, ?, ?, 'assistant', ?, ?, ?)
+        `).run(assistantMessageId, userId, courseId, fullResponse, messageType, tokensUsed);
 
         // Update user profile stats
         db.prepare(`
@@ -1131,8 +1131,8 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     const assistantMessageId = uuidv4();
     db.prepare(`
       INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type, tokens_used)
-      VALUES (?, ?, ?, 'assistant', ?, 'text', ?)
-    `).run(assistantMessageId, userId, courseId, fullResponse, tokensUsed || 0);
+      VALUES (?, ?, ?, 'assistant', ?, ?, ?)
+    `).run(assistantMessageId, userId, courseId, fullResponse, messageType, tokensUsed || 0);
 
     // Update user profile stats
     db.prepare(`

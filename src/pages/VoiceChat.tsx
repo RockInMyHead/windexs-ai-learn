@@ -98,9 +98,6 @@ const VoiceChat = () => {
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
-    // Clear TTS text for echo detection
-    currentTTSTextRef.current = '';
-    
     if (currentAudioRef.current) {
       console.log('🛑 Агрессивно прерываю текущую озвучку...');
 
@@ -306,6 +303,8 @@ const VoiceChat = () => {
           console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
           console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
           stopCurrentTTS();
+          // Очистить текст после прерывания, чтобы предотвратить ложные срабатывания
+          currentTTSTextRef.current = '';
         }
       }
 
@@ -820,7 +819,9 @@ const VoiceChat = () => {
 
       // ОБЯЗАТЕЛЬНО остановить предыдущее аудио перед запуском нового
       // Это предотвращает наложение нескольких TTS потоков
-      stopCurrentTTS();
+      if (currentAudioRef.current) {
+        stopCurrentTTS();
+      }
 
       // Небольшая задержка чтобы убедиться что предыдущее аудио полностью остановлено
       await new Promise(resolve => setTimeout(resolve, 100));
