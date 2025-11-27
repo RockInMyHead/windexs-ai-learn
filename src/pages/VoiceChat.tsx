@@ -535,13 +535,12 @@ const VoiceChat = () => {
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
-      // УБРАТЬ: stopCurrentTTS(); - не останавливать TTS перед новым!
+      // ОБЯЗАТЕЛЬНО остановить предыдущее аудио перед запуском нового
+      // Это предотвращает наложение нескольких TTS потоков
+      stopCurrentTTS();
 
-      // Double-check that audio is stopped (на случай если что-то осталось)
-      if (currentAudioRef.current) {
-        console.log('⚠️ Audio все еще существует после остановки, принудительно очищаем...');
-        currentAudioRef.current = null;
-      }
+      // Небольшая задержка чтобы убедиться что предыдущее аудио полностью остановлено
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       // Create audio element and play
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -619,7 +618,7 @@ const VoiceChat = () => {
         variant: "destructive"
       });
     }
-  }, [token, toast, isSoundEnabled]);
+  }, [token, toast, isSoundEnabled, stopCurrentTTS]);
 
   // Load user profile on component mount
   useEffect(() => {
