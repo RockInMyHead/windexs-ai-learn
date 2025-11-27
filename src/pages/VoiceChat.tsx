@@ -404,11 +404,14 @@ const VoiceChat = () => {
 
       const result = event.results[event.results.length - 1]; // Get the last result
 
-      // ВАЖНО: Во время активного TTS проверяем ВСЕ распознавания на эхо
-      if (!result.isFinal && (isSpeaking || currentAudioRef.current)) {
+      // ВАЖНО: Во время активного TTS или сразу после окончания проверяем ВСЕ распознавания на эхо
+      const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
+      const isRecentlyAfterTTS = !isSpeaking && timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0;
+      
+      if (!result.isFinal && (isSpeaking || currentAudioRef.current || isRecentlyAfterTTS)) {
         const interimTranscript = result[0].transcript.trim();
 
-        // СТРОГАЯ ПРОВЕРКА: если TTS активен, проверяем ВСЕ распознавания на эхо
+        // СТРОГАЯ ПРОВЕРКА: если TTS активен или недавно закончился, проверяем ВСЕ распознавания на эхо
         if (interimTranscript.length > 2) {
           // Проверяем, не является ли распознанный текст эхом от TTS
           if (isEchoOfTTS(interimTranscript, result[0].confidence)) {
@@ -416,8 +419,19 @@ const VoiceChat = () => {
             return; // Ignore echo - не прерываем TTS
           }
           
+          // Дополнительная проверка для недавно закончившегося TTS
+          if (isRecentlyAfterTTS && currentTTSTextRef.current) {
+            const normalizedTranscript = interimTranscript.toLowerCase().trim();
+            const ttsText = currentTTSTextRef.current.toLowerCase();
+            if (ttsText.includes(normalizedTranscript) || normalizedTranscript.length > 5 && 
+                ttsText.includes(normalizedTranscript.substring(0, Math.min(20, normalizedTranscript.length)))) {
+              console.log('🔇 Пропускаем эхо TTS (interim, пост-TTS):', interimTranscript);
+              return;
+            }
+          }
+          
           // Только если это НЕ эхо и уверенность очень высокая - прерываем
-          if (result[0].confidence > 0.9 && interimTranscript.length > 5) {
+          if (result[0].confidence > 0.9 && interimTranscript.length > 5 && !isRecentlyAfterTTS) {
             console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
             console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
             stopCurrentTTS();
@@ -435,9 +449,11 @@ const VoiceChat = () => {
               }
             }
           } else {
-            // Низкая уверенность или короткий текст во время TTS - игнорируем
-            console.log('🔇 Игнорируем неопределенное распознавание во время TTS:', interimTranscript);
-            return;
+            // Низкая уверенность или короткий текст во время/после TTS - игнорируем
+            if (isSpeaking || isRecentlyAfterTTS) {
+              console.log('🔇 Игнорируем неопределенное распознавание во время/после TTS:', interimTranscript);
+              return;
+            }
           }
         }
       }
@@ -447,27 +463,58 @@ const VoiceChat = () => {
         console.log('👤 Распознанный текст:', transcript);
         console.log('🎯 Текст для вывода:', transcript);
 
-        // Check if this is echo from TTS (active or post-TTS)
-        if (isEchoOfTTS(transcript, result[0].confidence)) {
-          console.log('🔇 Финальный текст является эхом TTS, пропускаем');
-          return;
-        }
-
         if (transcript) {
-        // Check for duplicate messages (avoid sending the same message twice)
-        const normalizedTranscript = transcript.toLowerCase().trim();
-        const normalizedLastSent = lastSentMessageRef.current.toLowerCase().trim();
+          // СТРОГАЯ ПРОВЕРКА: если TTS текст существует, проверяем на эхо
+          if (currentTTSTextRef.current) {
+            const normalizedTranscript = transcript.toLowerCase().trim();
+            const ttsText = currentTTSTextRef.current.toLowerCase();
+            const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
 
-        if (normalizedTranscript === normalizedLastSent) {
-          console.log('🔄 Дублирующее сообщение, пропускаем:', transcript);
-          return;
-        }
+            // Если прошло меньше 15 секунд после TTS - строгая проверка
+            if (timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0) {
+              // Проверяем точное или частичное совпадение
+              const isExactMatch = ttsText.includes(normalizedTranscript);
+              const isPartialMatch = normalizedTranscript.length > 5 && 
+                ttsText.includes(normalizedTranscript);
+              
+              // Если большая часть текста совпадает с TTS - это эхо
+              const wordsInTranscript = normalizedTranscript.split(/\s+/).length;
+              const matchingWords = normalizedTranscript.split(/\s+/).filter(word => 
+                ttsText.includes(word)
+              ).length;
+              const matchRatio = wordsInTranscript > 0 ? matchingWords / wordsInTranscript : 0;
 
-        // Additional check: if message is very short and similar to what we just sent
-        if (normalizedTranscript.length <= 15 && normalizedLastSent.includes(normalizedTranscript)) {
-          console.log('🔄 Похожее короткое сообщение после TTS, пропускаем:', transcript);
-          return;
-        }
+              if (isExactMatch || isPartialMatch || matchRatio > 0.6) {
+                console.log('🔇 Финальный текст является эхом TTS (строгая проверка), пропускаем:', {
+                  transcript: normalizedTranscript.substring(0, 50),
+                  matchRatio: matchRatio.toFixed(2),
+                  timeSinceEnd: timeSinceTTSEnd
+                });
+                return;
+              }
+            }
+          }
+
+          // Check if this is echo from TTS (active or post-TTS)
+          if (isEchoOfTTS(transcript, result[0].confidence)) {
+            console.log('🔇 Финальный текст является эхом TTS, пропускаем');
+            return;
+          }
+
+          // Check for duplicate messages (avoid sending the same message twice)
+          const normalizedTranscript = transcript.toLowerCase().trim();
+          const normalizedLastSent = lastSentMessageRef.current.toLowerCase().trim();
+
+          if (normalizedTranscript === normalizedLastSent) {
+            console.log('🔄 Дублирующее сообщение, пропускаем:', transcript);
+            return;
+          }
+
+          // Additional check: if message is very short and similar to what we just sent
+          if (normalizedTranscript.length <= 15 && normalizedLastSent.includes(normalizedTranscript)) {
+            console.log('🔄 Похожее короткое сообщение после TTS, пропускаем:', transcript);
+            return;
+          }
 
           // Clear TTS state since user is actually speaking
           clearTTSState();
