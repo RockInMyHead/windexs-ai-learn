@@ -50,6 +50,7 @@ const VoiceChat = () => {
   const [isGeneratingResponse, setIsGeneratingResponse] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMicEnabled, setIsMicEnabled] = useState(true);
+  const [ttsInterrupted, setTtsInterrupted] = useState(false);
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
 
@@ -81,10 +82,15 @@ const VoiceChat = () => {
         console.log('⚠️ Ошибка при прерывании audio:', error);
       }
 
-      currentAudioRef.current = null;
-      setIsSpeaking(false);
-    }
-  }, []);
+    currentAudioRef.current = null;
+  }
+
+  setIsSpeaking(false);
+  setTtsInterrupted(true);
+
+  // Сбросить индикатор через 2 секунды
+  setTimeout(() => setTtsInterrupted(false), 2000);
+}, []);
 
   // Initialize Web Speech API
   const initializeSpeechRecognition = useCallback(() => {
@@ -121,10 +127,16 @@ const VoiceChat = () => {
 
       const result = event.results[event.results.length - 1]; // Get the last result
 
-      // IMMEDIATELY stop TTS when user starts speaking (interim results)
-      if (!result.isFinal && isSpeaking) {
-        console.log('🛑 Пользователь начал говорить, НЕМЕДЛЕННО останавливаю TTS...');
-        stopCurrentTTS();
+      // Проверять не только isSpeaking, но и наличие активного аудио
+      if (!result.isFinal && (isSpeaking || currentAudioRef.current)) {
+        const interimTranscript = result[0].transcript.trim();
+
+        // Прерывать даже при коротких звуках (чтобы реагировать быстрее)
+        if (interimTranscript.length > 0 || result[0].confidence > 0.3) {
+          console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
+          console.log('📝 Interim transcript:', interimTranscript);
+          stopCurrentTTS();
+        }
       }
 
       if (result.isFinal) {
@@ -484,6 +496,26 @@ const VoiceChat = () => {
 
     setIsSpeaking(true);
 
+    // Активировать распознавание речи для прерывания TTS (если микрофон включен)
+    if (isMicEnabled && !isRecording) {
+      console.log('🎤 Включаю распознавание речи для прерывания TTS');
+      try {
+        if (!speechRecognitionRef.current) {
+          const recognition = initializeSpeechRecognition();
+          if (recognition) {
+            speechRecognitionRef.current = recognition;
+          }
+        }
+        if (speechRecognitionRef.current) {
+          speechRecognitionRef.current.start();
+          setIsRecording(true);
+          console.log('✅ Распознавание речи запущено для TTS прерывания');
+        }
+      } catch (error) {
+        console.error('❌ Не удалось запустить распознавание речи:', error);
+      }
+    }
+
     try {
       console.log('🔊 Отправка текста в OpenAI TTS...');
 
@@ -508,10 +540,9 @@ const VoiceChat = () => {
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
-      // Stop any currently playing audio
-      stopCurrentTTS();
+      // УБРАТЬ: stopCurrentTTS(); - не останавливать TTS перед новым!
 
-      // Double-check that audio is stopped
+      // Double-check that audio is stopped (на случай если что-то осталось)
       if (currentAudioRef.current) {
         console.log('⚠️ Audio все еще существует после остановки, принудительно очищаем...');
         currentAudioRef.current = null;
@@ -528,18 +559,38 @@ const VoiceChat = () => {
       };
 
       audio.onended = () => {
-        console.log('🔊 Озвучка завершена');
-        setIsSpeaking(false);
-        currentAudioRef.current = null;
-        // Clean up URL
+        console.log('✅ Озвучка завершена');
         URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+        setIsSpeaking(false);
+
+        // Остановить распознавание речи после завершения TTS
+        if (speechRecognitionRef.current && isRecording) {
+          console.log('🎤 Останавливаю распознавание речи после TTS');
+          try {
+            speechRecognitionRef.current.stop();
+            setIsRecording(false);
+          } catch (error) {
+            console.log('⚠️ Ошибка остановки распознавания:', error);
+          }
+        }
       };
 
       audio.onerror = (event) => {
         console.error('❌ Ошибка воспроизведения аудио:', event);
-        setIsSpeaking(false);
-        currentAudioRef.current = null;
         URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+        setIsSpeaking(false);
+
+        // Остановить распознавание речи в случае ошибки
+        if (speechRecognitionRef.current && isRecording) {
+          try {
+            speechRecognitionRef.current.stop();
+            setIsRecording(false);
+          } catch (e) {
+            console.log('⚠️ Ошибка остановки распознавания при ошибке TTS:', e);
+          }
+        }
         toast({
           title: "Ошибка озвучки",
           description: "Не удалось воспроизвести аудио",
@@ -556,6 +607,17 @@ const VoiceChat = () => {
     } catch (error) {
       console.error('❌ Ошибка TTS:', error);
       setIsSpeaking(false);
+
+      // Остановить распознавание речи в случае ошибки
+      if (speechRecognitionRef.current && isRecording) {
+        try {
+          speechRecognitionRef.current.stop();
+          setIsRecording(false);
+        } catch (e) {
+          console.log('⚠️ Ошибка остановки распознавания при ошибке TTS:', e);
+        }
+      }
+
       toast({
         title: "Ошибка озвучки",
         description: `Не удалось озвучить текст: ${error.message}`,
@@ -594,6 +656,17 @@ const VoiceChat = () => {
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
+
+      {/* TTS interruption indicator */}
+      {ttsInterrupted && (
+        <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50">
+          <div className="bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg animate-bounce flex items-center gap-2">
+            <div className="w-3 h-3 bg-white rounded-full animate-pulse"></div>
+            <span className="text-sm font-medium">🎤 Речь распознана - TTS остановлен</span>
+          </div>
+        </div>
+      )}
+
       <main className="container mx-auto px-4 pt-24 pb-16">
         <div className="max-w-2xl mx-auto">
           <div className="text-center mb-8 animate-fade-in">
