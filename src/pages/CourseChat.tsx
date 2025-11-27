@@ -79,7 +79,11 @@ const CourseChat = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setMessages(data.messages.map((m: any) => ({
+        // Filter out voice messages from text chat (they belong to VoiceChat interface only)
+        const textMessages = data.messages.filter((m: any) =>
+          m.content !== '🎤 Голосовое сообщение' && m.message_type !== 'voice'
+        );
+        setMessages(textMessages.map((m: any) => ({
           id: m.id,
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: m.content,
