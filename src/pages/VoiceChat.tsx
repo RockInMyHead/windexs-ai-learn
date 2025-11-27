@@ -88,6 +88,29 @@ const VoiceChat = () => {
     const ttsText = currentTTSTextRef.current.toLowerCase();
     const timeSinceTTSEnd = lastTTSEndTimeRef.current > 0 ? Date.now() - lastTTSEndTimeRef.current : -1;
 
+    // ПРИОРИТЕТ: Проверяем активное TTS эхо (когда TTS сейчас играет)
+    if (isSpeaking || currentAudioRef.current) {
+      // Во время активного TTS - строгая проверка на любое совпадение
+      const isExactMatch = ttsText.includes(normalizedRecognized);
+      const isPartialMatch = normalizedRecognized.length > 3 &&
+        ttsText.includes(normalizedRecognized);
+      
+      // Если есть хоть какое-то совпадение во время активного TTS - это точно эхо
+      if (isExactMatch || isPartialMatch) {
+        if (ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
+          console.log('🔇 Detected active TTS echo:', {
+            recognized: normalizedRecognized,
+            ttsText: ttsText.substring(0, 100) + '...',
+            isSpeaking,
+            confidence,
+            isExactMatch,
+            isPartialMatch
+          });
+        }
+        return true;
+      }
+    }
+
     // Проверяем пост-TTS эхо (в течение 15 секунд после окончания озвучки)
     if (!isSpeaking && timeSinceTTSEnd < 15000 && timeSinceTTSEnd >= 0) {
       // Проверяем точное совпадение или схожесть
@@ -188,7 +211,7 @@ const VoiceChat = () => {
     }
 
     return isEcho;
-  }, [currentTTSTextRef, isSpeaking, ttsEchoDetector, textCorrelationDetector, mlEchoDetector]);
+  }, [currentTTSTextRef, isSpeaking, currentAudioRef, ttsEchoDetector, textCorrelationDetector, mlEchoDetector]);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
@@ -381,34 +404,40 @@ const VoiceChat = () => {
 
       const result = event.results[event.results.length - 1]; // Get the last result
 
-      // Проверять не только isSpeaking, но и наличие активного аудио
+      // ВАЖНО: Во время активного TTS проверяем ВСЕ распознавания на эхо
       if (!result.isFinal && (isSpeaking || currentAudioRef.current)) {
         const interimTranscript = result[0].transcript.trim();
 
-        // Более консервативная логика прерывания (только при уверенном распознавании)
-        // И проверяем, что это не эхо от TTS
-        if (interimTranscript.length > 2 && result[0].confidence > 0.7) {
+        // СТРОГАЯ ПРОВЕРКА: если TTS активен, проверяем ВСЕ распознавания на эхо
+        if (interimTranscript.length > 2) {
           // Проверяем, не является ли распознанный текст эхом от TTS
-          if (isEchoOfTTS(interimTranscript)) {
-            console.log('🔇 Пропускаем эхо TTS:', interimTranscript);
-            return; // Ignore echo
+          if (isEchoOfTTS(interimTranscript, result[0].confidence)) {
+            console.log('🔇 Пропускаем эхо TTS (interim):', interimTranscript);
+            return; // Ignore echo - не прерываем TTS
           }
           
-          console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
-          console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
-          stopCurrentTTS();
-          // Очистить состояние TTS после прерывания
-          clearTTSState();
+          // Только если это НЕ эхо и уверенность очень высокая - прерываем
+          if (result[0].confidence > 0.9 && interimTranscript.length > 5) {
+            console.log('🛑 Обнаружена речь пользователя, останавливаю TTS...');
+            console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
+            stopCurrentTTS();
+            // Очистить состояние TTS после прерывания
+            clearTTSState();
 
-          // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
-          if (speechRecognitionRef.current && isRecording) {
-            try {
-              speechRecognitionRef.current.stop();
-              setIsRecording(false);
-              console.log('🎤 Распознавание речи остановлено после прерывания TTS');
-            } catch (e) {
-              console.log('⚠️ Ошибка остановки распознавания:', e);
+            // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
+            if (speechRecognitionRef.current && isRecording) {
+              try {
+                speechRecognitionRef.current.stop();
+                setIsRecording(false);
+                console.log('🎤 Распознавание речи остановлено после прерывания TTS');
+              } catch (e) {
+                console.log('⚠️ Ошибка остановки распознавания:', e);
+              }
             }
+          } else {
+            // Низкая уверенность или короткий текст во время TTS - игнорируем
+            console.log('🔇 Игнорируем неопределенное распознавание во время TTS:', interimTranscript);
+            return;
           }
         }
       }
