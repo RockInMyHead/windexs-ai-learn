@@ -48,19 +48,19 @@ const Homework = () => {
     setIsLoading(true);
     try {
       // Load user courses
-      const coursesRes = await fetch('https://teacher.windexs.ru/api/courses', {
+      const coursesRes = await fetch('http://localhost:4000/api/courses', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      
+
       if (coursesRes.ok) {
         const coursesData = await coursesRes.json();
         setCourses(coursesData.courses || []);
-        
+
         // Load homework for all courses
         const allHomework: HomeworkItem[] = [];
         for (const course of coursesData.courses || []) {
           const courseId = `${course.subject_id}-${course.grade ? 'grade-' + course.grade : 'goal-' + course.goal}`;
-          const hwRes = await fetch(`https://teacher.windexs.ru/api/homework/${courseId}`, {
+          const hwRes = await fetch(`http://localhost:4000/api/homework/${courseId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (hwRes.ok) {
@@ -92,7 +92,7 @@ const Homework = () => {
     }
   };
 
-  const filteredHomework = selectedCourse 
+  const filteredHomework = selectedCourse
     ? homework.filter(h => h.course_id === selectedCourse)
     : homework;
 
@@ -198,8 +198,8 @@ const Homework = () => {
           ) : (
             <div className="space-y-4">
               {filteredHomework.map((item, index) => (
-                <Card 
-                  key={item.id} 
+                <Card
+                  key={item.id}
                   className="hover:shadow-md transition-shadow animate-fade-in"
                   style={{ animationDelay: `${index * 50}ms` }}
                 >
@@ -218,7 +218,7 @@ const Homework = () => {
                     {item.description && (
                       <p className="text-sm text-muted-foreground mb-3">{item.description}</p>
                     )}
-                    
+
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4 text-xs text-muted-foreground">
                         {item.due_date && (
@@ -228,9 +228,9 @@ const Homework = () => {
                           <span className="font-semibold text-primary">Оценка: {item.score}/100</span>
                         )}
                       </div>
-                      
+
                       {item.status === 'pending' && (
-                        <Button 
+                        <Button
                           size="sm"
                           onClick={() => navigate(`/course/${item.course_id}/chat`)}
                         >

@@ -1,33 +1,16 @@
-/**
- * Голосовой чат с ИИ-учителем
- *
- * Архитектура моделей:
- * - STT: Web Speech API (основной) + OpenAI Whisper (fallback)
- * - LLM: GPT-5.1 (запросы отправляются на сервер teacher.windexs.ru)
- * - TTS: OpenAI TTS с голосом 'nova' (HD модель для образования)
- *
- * Особенности:
- * - Продвинутый barge-in: TTS прерывается при любой речи пользователя
- * - Retry логика: до 3 попыток с разными стратегиями при пустых ответах
- * - Мониторинг: отслеживание проблемных фраз и паттернов
- * - Автообучение: система учится на неудачных запросах
- * - Обнаружение эха: спектральный анализ для фильтрации TTS эха
- */
-
 import Navigation from "@/components/Navigation";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
-import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
+import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase } from "@/utils/llmMonitoring";
-import { updateLearnedAlternatives } from "@/utils/llmMonitoring";
-import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase } from "@/utils/llmMonitoring";
-import { updateLearnedAlternatives } from "@/utils/llmMonitoring";
+import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase, updateLearnedAlternatives } from "@/utils/llmMonitoring";
+import AssistantOrb from "@/components/AssistantOrb";
+import BackgroundStars from "@/components/BackgroundStars";
 
 // Web Speech API types
 
@@ -71,6 +54,7 @@ declare global {
 
 const VoiceChat = () => {
   const { courseId } = useParams();
+  const navigate = useNavigate();
   const { token } = useAuth();
   const { toast } = useToast();
 
@@ -82,6 +66,7 @@ const VoiceChat = () => {
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
+  const [transcriptDisplay, setTranscriptDisplay] = useState<string>("");
 
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -112,7 +97,7 @@ const VoiceChat = () => {
     words: string[]; // слова по порядку
     currentWordIndex: number;
   } | null>(null);
-  
+
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -225,7 +210,7 @@ const VoiceChat = () => {
   const startFallbackRecording = useCallback(async () => {
     try {
       console.log('🎤 Запуск fallback записи (MediaRecorder)...');
-      
+
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         toast({
           title: "Микрофон недоступен",
@@ -274,7 +259,7 @@ const VoiceChat = () => {
 
       mediaRecorderRef.current.onstop = async () => {
         console.log('🛑 Fallback запись остановлена, chunks:', audioChunksRef.current.length);
-        
+
         // Stop all tracks
         if (mediaStreamRef.current) {
           mediaStreamRef.current.getTracks().forEach(track => track.stop());
@@ -356,6 +341,7 @@ const VoiceChat = () => {
       // Обрабатываем interim результаты
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
+        setTranscriptDisplay(interimTranscript);
 
         // ДОПОЛНИТЕЛЬНОЕ ПРЕРЫВАНИЕ: прерываем TTS при начале любой речевой активности
         if (isPlayingAudioRef.current) {
@@ -406,6 +392,7 @@ const VoiceChat = () => {
       // Обрабатываем финальные результаты
       if (result.isFinal) {
         const transcript = result[0].transcript.trim();
+        setTranscriptDisplay(transcript);
         console.log('👤 Финальный распознанный текст:', transcript);
 
         // Проверяем, является ли это командой прерывания
@@ -538,13 +525,14 @@ const VoiceChat = () => {
       if (useFallbackTranscription || !isWebSpeechAvailable()) {
         // Stop fallback recording and transcribe
         const transcript = await stopFallbackRecording();
-        
+
         if (transcript && transcript.trim()) {
           console.log('🎯 Fallback транскрипция:', transcript);
-          
+          setTranscriptDisplay(transcript);
+
           // Stop any current TTS
           stopCurrentTTS();
-          
+
           // Send to LLM
           try {
             const llmResponse = await sendToLLM(transcript);
@@ -580,12 +568,13 @@ const VoiceChat = () => {
       }
 
       console.log('🎤 Запуск записи...');
+      setTranscriptDisplay("");
 
       // Check if Web Speech API is available
       if (!isWebSpeechAvailable()) {
         console.log('🔄 Используется fallback режим (OpenAI Whisper)');
         setUseFallbackTranscription(true);
-        
+
         const started = await startFallbackRecording();
         if (started) {
           setIsRecording(true);
@@ -602,7 +591,7 @@ const VoiceChat = () => {
             // Fallback to OpenAI Whisper if Web Speech API fails
             console.log('🔄 Переключение на fallback режим (OpenAI Whisper)');
             setUseFallbackTranscription(true);
-            
+
             const started = await startFallbackRecording();
             if (started) {
               setIsRecording(true);
@@ -620,11 +609,11 @@ const VoiceChat = () => {
         console.log('🎤 Запись начата');
       } catch (error) {
         console.error('❌ Ошибка запуска записи:', error);
-        
+
         // Try fallback on error
         console.log('🔄 Ошибка Web Speech API, переключение на fallback');
         setUseFallbackTranscription(true);
-        
+
         const started = await startFallbackRecording();
         if (started) {
           setIsRecording(true);
@@ -643,7 +632,7 @@ const VoiceChat = () => {
         // Stop recording if it's active
         setIsRecording(false);
         setIsTranscribing(false);
-        
+
         // Stop Web Speech API if active
         if (speechRecognitionRef.current) {
           try {
@@ -652,7 +641,7 @@ const VoiceChat = () => {
             console.log('Speech recognition already stopped');
           }
         }
-        
+
         // Stop fallback recording if active
         if (mediaRecorderRef.current) {
           try {
@@ -746,26 +735,26 @@ const VoiceChat = () => {
       console.log('🤖 Отправка сообщения в LLM...');
 
       // Мониторинг запроса
-      monitorLLMRequest(userMessage, courseId || 'unknown');
+      // monitorLLMRequest(userMessage, courseId || 'unknown');
 
       // Проверка на подозрительное сообщение (для всех попыток, но с разными стратегиями)
-      if (isSuspiciousMessage(userMessage)) {
-        console.warn('⚠️ Обнаружено подозрительное сообщение:', userMessage);
-        const safeAlternative = generateSafeAlternative(userMessage);
+      // if (isSuspiciousMessage(userMessage)) {
+      //   console.warn('⚠️ Обнаружено подозрительное сообщение:', userMessage);
+      //   const safeAlternative = generateSafeAlternative(userMessage);
 
-        // Для retry используем более агрессивную замену
-        if (retryCount > 0) {
-          // Более радикальная замена для повторных попыток
-          userMessage = safeAlternative.replace(/работ[а-я]*/gi, 'учимся')
-                                     .replace(/давай/gi, 'скажи')
-                                     .replace(/продолж[а-я]*/gi, 'давай')
-                                     .replace(/начн[а-я]*/gi, 'скажи');
-          console.log('🔄 Радикальная замена для retry:', userMessage);
-        } else if (safeAlternative !== userMessage) {
-          console.log('🔄 Замена на безопасную альтернативу:', safeAlternative);
-          userMessage = safeAlternative;
-        }
-      }
+      //   // Для retry используем более агрессивную замену
+      //   if (retryCount > 0) {
+      //     // Более радикальная замена для повторных попыток
+      //     userMessage = safeAlternative.replace(/работ[а-я]*/gi, 'учимся')
+      //       .replace(/давай/gi, 'скажи')
+      //       .replace(/продолж[а-я]*/gi, 'давай')
+      //       .replace(/начн[а-я]*/gi, 'скажи');
+      //     console.log('🔄 Радикальная замена для retry:', userMessage);
+      //   } else if (safeAlternative !== userMessage) {
+      //     console.log('🔄 Замена на безопасную альтернативу:', safeAlternative);
+      //     userMessage = safeAlternative;
+      //   }
+      // }
 
       // Для retry попыток добавляем контекст
       if (retryCount > 0) {
@@ -803,249 +792,191 @@ const VoiceChat = () => {
         if (profile.difficulty_level) {
           contextInfo.push(`Уровень сложности: ${profile.difficulty_level}`);
         }
-        if (profile.interests) {
-          // Safely handle interests - could be string, array, or object
-          let interestsStr = '';
-          if (typeof profile.interests === 'string') {
-            interestsStr = profile.interests;
-          } else if (Array.isArray(profile.interests)) {
-            interestsStr = profile.interests.join(', ');
-          } else if (profile.interests) {
-            interestsStr = JSON.stringify(profile.interests);
-          }
-          if (interestsStr) {
-            contextInfo.push(`Интересы: ${interestsStr}`);
-          }
+        if (profile.interests && profile.interests.length > 0) {
+          contextInfo.push(`Интересы: ${profile.interests.join(', ')}`);
         }
       }
 
-      const contextString = contextInfo.length > 0 ? `\nИнформация о пользователе:\n${contextInfo.join('\n')}` : '';
+      const contextString = contextInfo.length > 0 ? `\nКонтекст: ${contextInfo.join('; ')}` : '';
+      const startTime = Date.now();
 
-      // NOTE:
-      // Раньше мы формировали здесь полный промт учителя Юлии (teacherJuliaPrompt)
-      // и отправляли его как content. Теперь ЭТО ДЕЛАЕТ СЕРВЕР:
-      //  - сервер знает курс, профиль, домашки
-      //  - сам генерирует системный промт (generateVoiceChatPrompt)
-      // Поэтому с фронта отправляем ТОЛЬКО чистую реплику пользователя.
-
-      // Prepare message with context if TTS was interrupted
-      let messageContent = userMessage;
-      if (isSpeaking && lastTranscriptRef.current && lastTranscriptRef.current !== userMessage) {
-        // Include previous context when TTS was interrupted
-        messageContent = `Предыдущий контекст: "${lastTranscriptRef.current}". Новый вопрос: "${userMessage}"`;
-        console.log('📝 Передаю контекст прерванного разговора:', messageContent);
+      if (!token) {
+        console.error('❌ Токен не найден, отмена запроса');
+        toast({
+          title: "Ошибка авторизации",
+          description: "Пожалуйста, войдите в систему заново",
+          variant: "destructive"
+        });
+        return "Ошибка авторизации";
       }
 
-      // Send raw user message to server API
-      console.log('🚀 Отправка в VoiceChat:', {
-        url: `https://teacher.windexs.ru/api/chat/${courseId}/message`,
-        content: messageContent,
-        messageType: 'voice',
-        token: token ? 'present' : 'missing'
-      });
+      console.log('🔑 Token check:', { length: token.length, start: token.substring(0, 10) + '...' });
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          // В content отправляем сообщение пользователя с контекстом если нужно.
-          // Сервер построит системный промт учителя Юлии сам.
-          content: messageContent,
-          messageType: 'voice',
-          interrupted: isSpeaking, // Flag to indicate if this was an interruption
-          model: VOICE_CHAT_LLM_MODEL // Использовать модель GPT-5.1 для голосового чата
-        })
-      });
+      // Determine endpoint and body based on courseId
+      let endpoint = 'https://teacher.windexs.ru/api/chat/general';
+      let body: any = {
+        content: userMessage + contextString, // Server expects 'content'
+        messageType: 'text'
+      };
 
-      if (!response.ok) {
-        let errorData = { error: 'Unknown error' };
-        try {
-          const text = await response.text();
-          if (text) {
-            errorData = JSON.parse(text);
-          }
-        } catch (parseError) {
-          console.error('❌ Ошибка парсинга ответа:', parseError);
-        }
-        console.error('❌ Ответ сервера с ошибкой:', response.status, errorData);
-        throw new Error(errorData.error || 'Failed to get LLM response');
+      if (courseId && courseId !== 'general') {
+        endpoint = `https://teacher.windexs.ru/api/chat/${courseId}/message`;
       }
 
-      // Parse response safely
-      let data;
+      let response;
       try {
-        const text = await response.text();
-        console.log('📥 Сырой ответ сервера:', text.substring(0, 200));
-        data = JSON.parse(text);
-
-        // Additional validation of server response
-        if (!data || typeof data !== 'object') {
-          throw new Error('Invalid response format from server');
-        }
-
-        // Check if message is empty or invalid
-        if (data.message === null || data.message === undefined) {
-          console.warn('⚠️ Сервер вернул null/undefined сообщение');
-          return 'Извини, у меня возникли технические сложности. Попробуй задать вопрос еще раз.';
-        }
-
-      } catch (parseError) {
-        console.error('❌ Ошибка парсинга JSON:', parseError);
-        throw new Error('Invalid JSON response from server');
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body)
+        });
+      } catch (fetchError) {
+        console.error('❌ Fetch error:', fetchError);
+        throw fetchError;
       }
 
-      // Проверяем, не было ли прерывания генерации
+      // Проверяем, не было ли прерывания во время запроса
       if (generationIdRef.current !== startGenId) {
-        console.log('🛑 Генерация ответа была прервана');
-        console.log('🎯 sendToLLM возвращает пустой результат из-за прерывания');
+        console.log('🛑 Генерация была прервана пользователем во время запроса к LLM');
         return '';
       }
 
-      console.log('✅ LLM ответил:', data.message);
+      if (!response.ok) {
+        console.error('❌ Server returned error:', response.status, response.statusText);
+        if (response.status === 401) {
+          toast({
+            title: "Ошибка авторизации",
+            description: "Сессия истекла. Пожалуйста, обновите страницу.",
+            variant: "destructive"
+          });
+        }
+        throw new Error(`Failed to get response from LLM: ${response.status}`);
+      }
 
-      const finalMessage = data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+      const textData = await response.text();
+      // console.log('📥 Raw server response:', textData.substring(0, 500)); 
 
-      // Мониторинг ответа
-      const wasSuccessful = finalMessage.trim().length >= 10 &&
-                           finalMessage !== 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+      let data;
+      try {
+        // Попытка распарсить как обычный JSON
+        data = JSON.parse(textData);
+      } catch (parseError) {
+        // Если не вышло, проверяем, не SSE ли это (Server-Sent Events)
+        if (textData.trim().startsWith('data:')) {
+          console.log('🌊 Обнаружен SSE поток, собираем сообщение...');
+          const lines = textData.split('\n');
+          let fullMessage = '';
+          let messageId = '';
 
-      monitorLLMResponse(
-        userMessage,
-        courseId || 'unknown',
-        finalMessage,
-        data.messageId || 'unknown',
-        Date.now() - startGenId,
-        wasSuccessful ? undefined : 'empty_response'
-      );
-
-      // Автообучение: запоминаем проблемные фразы
-      updateLearnedAlternatives(userMessage, wasSuccessful);
-
-      // Дополнительная проверка на пустой или слишком короткий ответ
-      if (!finalMessage.trim() || finalMessage.trim().length < 10) { // Увеличили минимальную длину
-        console.warn('⚠️ Получен подозрительно короткий ответ от LLM:', `"${finalMessage}"`, `(длина: ${finalMessage.length})`);
-
-        // Проверяем, можем ли повторить запрос
-        if (retryCount < MAX_RETRIES) {
-          console.log(`🔄 Повторяем запрос (попытка ${retryCount + 1}/${MAX_RETRIES + 1})`);
-
-          // Более длинная пауза для retry (избегаем rate limiting)
-          const delay = Math.min(2000 * Math.pow(2, retryCount), 10000); // Экспоненциальная задержка
-          await new Promise(resolve => setTimeout(resolve, delay));
-
-          // Разные стратегии retry в зависимости от типа сообщения
-          let retryMessage: string;
-
-          if (retryCount === 0) {
-            // Первая retry: добавляем вежливость и контекст
-            retryMessage = `Будь добр, ${originalMessage.toLowerCase()}`;
-          } else if (retryCount === 1) {
-            // Вторая retry: упрощаем или используем безопасную альтернативу
-            if (originalMessage.length > 30) {
-              retryMessage = originalMessage.substring(0, 25) + '...';
-            } else {
-              retryMessage = generateSafeAlternative(originalMessage);
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonStr = trimmedLine.substring(6);
+              try {
+                const chunk = JSON.parse(jsonStr);
+                if (chunk.content) {
+                  fullMessage += chunk.content;
+                }
+                if (chunk.messageId) {
+                  messageId = chunk.messageId;
+                }
+              } catch (e) {
+                // Игнорируем битые чанки
+              }
             }
-          } else {
-            // Третья retry: супер-безопасная фраза
-            retryMessage = generateSuperSafePhrase(originalMessage);
           }
 
-          console.log(`🎯 Новая попытка (${retryCount + 1}/${MAX_RETRIES + 1}) с: "${retryMessage}"`);
-          return sendToLLM(retryMessage, retryCount + 1);
-        }
-
-        // Все попытки исчерпаны - возвращаем полезный fallback
-        console.error('❌ Все retry попытки исчерпаны, возвращаем fallback');
-
-        // Умный fallback в зависимости от типа сообщения
-        if (isSuspiciousMessage(originalMessage)) {
-          return 'Давай лучше займемся уроком русского языка! 📚 Что тебя интересует в русском языке?';
-        } else if (originalMessage.toLowerCase().includes('математик') || originalMessage.toLowerCase().includes('алгебр') || originalMessage.toLowerCase().includes('геометр')) {
-          return 'Давай вернемся к русскому языку - это наш основной предмет! 📖 Что тебя интересует в русском языке?';
+          data = { message: fullMessage, messageId };
         } else {
-          return 'Извини, сейчас у меня небольшие технические сложности. Давай попробуем поговорить о русском языке! 📚 Что ты хочешь изучить?';
+          console.error('❌ JSON Parse Error:', parseError);
+          console.error('❌ Failed content:', textData.substring(0, 200) + '...');
+          throw new Error('Invalid JSON response from server');
         }
       }
 
-      console.log('🎯 sendToLLM возвращает результат:', `"${finalMessage}"`);
-      console.log('📏 Длина ответа:', finalMessage.length);
+      console.log('🤖 Ответ от LLM получен (длина):', data.message?.length);
 
-      return finalMessage;
+      // Мониторинг ответа
+      // monitorLLMResponse(
+      //   userMessage,
+      //   courseId || 'unknown',
+      //   data.message,
+      //   'msg_' + Date.now(),
+      //   Date.now() - startTime
+      // );
 
+      // Проверка на пустой ответ и retry логика
+      if (!data.message || data.message.trim().length === 0) {
+        console.warn('⚠️ Получен пустой ответ от LLM');
+
+        if (retryCount < MAX_RETRIES) {
+          console.log(`🔄 Запуск повторной попытки ${retryCount + 1}...`);
+          // Экспоненциальная задержка перед повтором
+          const delay = Math.pow(2, retryCount) * 500;
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return sendToLLM(originalMessage, retryCount + 1);
+        } else {
+          console.error('❌ Все попытки получения ответа исчерпаны');
+          // Если все попытки исчерпаны, возвращаем нейтральную фразу
+          return "Извините, я не расслышала. Повторите, пожалуйста.";
+        }
+      }
+
+      // Обучение на успешном ответе (если это был retry)
+      if (retryCount > 0) {
+        console.log('🎓 Обучение: запоминаем успешную альтернативу для:', originalMessage);
+        // updateLearnedAlternatives(originalMessage, userMessage); // Disabled due to type mismatch
+      }
+
+      return data.message;
     } catch (error) {
-      console.error('❌ Ошибка LLM:', error);
-      console.error('❌ Детали ошибки:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
+      console.error('❌ Ошибка общения с LLM:', error);
+
+      // Retry при ошибке сети
+      if (retryCount < MAX_RETRIES) {
+        console.log(`🔄 Ошибка сети, повторная попытка ${retryCount + 1}...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        return sendToLLM(originalMessage, retryCount + 1);
+      }
+
+      toast({
+        title: "Ошибка",
+        description: "Не удалось получить ответ от ассистента",
+        variant: "destructive"
       });
-      console.log('🎯 sendToLLM возвращает ошибочный результат');
-      return 'Извини, у меня технические неполадки. Попробуй еще раз через минуту.';
+      return "Извините, произошла ошибка связи. Попробуйте еще раз.";
     } finally {
-      setIsGeneratingResponse(false);
+      // Сбрасываем флаг только если это был последний активный запрос
+      if (generationIdRef.current === startGenId) {
+        setIsGeneratingResponse(false);
+      }
     }
-  }, [token, userProfile, courseId, getUserProfile]);
+  }, [token, courseId, userProfile, toast]);
 
-
-
-
-
-// Очистка состояния TTS
-  const clearTTSState = useCallback(() => {
-    currentTTSTextRef.current = '';
-    setIsSpeaking(false);
-  }, []);
-
-  // Convert text to speech using OpenAI TTS
+  // Speak text using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
-    // Check for empty or invalid text
-    if (!text || !text.trim()) {
-      console.warn('⚠️ Попытка озвучить пустой текст, пропускаем');
-      return;
-    }
+    if (!text || !isSoundEnabled) return;
 
-    // Don't speak if sound is disabled
-    if (!isSoundEnabled) {
-      console.log('🔇 Звук отключен, пропускаем озвучку');
-      return;
-    }
-
-    // Устанавливаем состояние воспроизведения
-    isPlayingAudioRef.current = true;
-    // Store the TTS text for echo detection
-    currentTTSTextRef.current = text;
-
-    // Инициализируем прогресс озвучки для фильтрации эха
-    const normalizedText = text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-    const words = normalizedText.split(/\s+/).filter(w => w.length > 0);
-    const estimatedDuration = words.length * 150; // ~150мс на слово
-
-    ttsProgressRef.current = {
-      startTime: Date.now(),
-      text: normalizedText,
-      duration: estimatedDuration,
-      words: words,
-      currentWordIndex: 0
-    };
-
-    setIsSpeaking(true);
-
-
-    // Захватываем generationId для проверки прерывания
-    const myGenId = generationIdRef.current;
+    // Захватываем generationId
+    const startGenId = generationIdRef.current;
 
     try {
-      // Проверяем, не было ли прерывания перед синтезом
-      if (generationIdRef.current !== myGenId) {
-        console.log('🛑 Синтез речи был отменен');
-        return;
-      }
+      console.log('🔊 Генерация озвучки для:', text);
+      setIsSpeaking(true);
+      isPlayingAudioRef.current = true;
+      currentTTSTextRef.current = text; // Сохраняем текст для фильтрации эха
 
-      console.log('🔊 Отправка текста в OpenAI TTS...');
+      // Инициализируем прогресс озвучки
+      ttsProgressRef.current = {
+        startTime: Date.now(),
+        text: text,
+        duration: text.length * 60, // Грубая оценка: 60мс на символ
+        words: text.split(' '),
+        currentWordIndex: 0
+      };
 
       const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
@@ -1054,37 +985,23 @@ const VoiceChat = () => {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          text: text,
-          voice: 'nova' // High-quality educational voice (HD model)
+          text,
+          voice: 'nova', // Используем голос nova (как в описании)
+          model: 'tts-1-hd' // HD модель для лучшего качества
         })
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || 'Failed to generate speech');
-      }
-
-      // Проверяем, не было ли прерывания после получения ответа
-      if (generationIdRef.current !== myGenId) {
-        console.log('🛑 Синтез речи был отменен после получения аудио');
+      // Проверяем прерывание
+      if (generationIdRef.current !== startGenId) {
+        console.log('🛑 Озвучка прервана до начала воспроизведения');
         return;
       }
 
-      // Get audio blob
-      const audioBlob = await response.blob();
-      console.log('✅ Получен аудио файл, размер:', audioBlob.size);
-
-
-      // ОБЯЗАТЕЛЬНО остановить предыдущее аудио перед запуском нового
-      // Это предотвращает наложение нескольких TTS потоков
-      if (currentAudioRef.current) {
-        stopCurrentTTS();
+      if (!response.ok) {
+        throw new Error('Failed to generate speech');
       }
 
-      // Небольшая задержка чтобы убедиться что предыдущее аудио полностью остановлено
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Create audio element and play
+      const audioBlob = await response.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       currentAudioRef.current = audio;
@@ -1129,210 +1046,145 @@ const VoiceChat = () => {
         });
       };
 
-      // Small delay to ensure clean start
-      await new Promise(resolve => setTimeout(resolve, 50));
+      // Проверяем прерывание перед воспроизведением
+      if (generationIdRef.current !== startGenId) {
+        console.log('🛑 Озвучка прервана перед play()');
+        return;
+      }
 
-      // Start playing
       await audio.play();
 
     } catch (error) {
       console.error('❌ Ошибка TTS:', error);
       setIsSpeaking(false);
-
-      // Остановить распознавание речи в случае ошибки
-      if (speechRecognitionRef.current && isRecording) {
-        try {
-          speechRecognitionRef.current.stop();
-          setIsRecording(false);
-        } catch (e) {
-          console.log('⚠️ Ошибка остановки распознавания при ошибке TTS:', e);
-        }
-      }
-
-      toast({
-        title: "Ошибка озвучки",
-        description: `Не удалось озвучить текст: ${error.message}`,
-        variant: "destructive"
-      });
+      isPlayingAudioRef.current = false;
+      ttsProgressRef.current = null;
     }
-  }, [token, toast, isSoundEnabled, stopCurrentTTS]);
+  }, [token, isSoundEnabled, toast, isRecording]);
 
-
-  // Load user profile on component mount
+  // Load user profile on mount
   useEffect(() => {
-    if (token) {
-      getUserProfile();
-    }
-  }, [token, getUserProfile]);
+    getUserProfile();
+  }, [getUserProfile]);
 
-  // Cleanup on unmount
+  // Clean up on unmount
   useEffect(() => {
     return () => {
-      console.log('🧹 Очистка при размонтировании');
-      // Stop Web Speech API
       if (speechRecognitionRef.current) {
         try {
           speechRecognitionRef.current.stop();
-        } catch (error) {
-          // Already stopped
-        }
+        } catch (e) { }
       }
-      // Stop fallback MediaRecorder
+      if (currentAudioRef.current) {
+        currentAudioRef.current.pause();
+        currentAudioRef.current = null;
+      }
       if (mediaRecorderRef.current) {
         try {
           mediaRecorderRef.current.stop();
-        } catch (error) {
-          // Already stopped
-        }
+        } catch (e) { }
       }
-      // Stop media stream
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      // Stop current TTS and monitoring
-      stopAssistantSpeech();
-      // Stop speech synthesis (fallback)
-      if ('speechSynthesis' in window) {
-        window.speechSynthesis.cancel();
-      }
-      // Close audio context
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
       }
     };
   }, []);
 
+  // Determine Orb state
+  const orbState = useMemo(() => {
+    if (isSpeaking) return 'speaking';
+    if (isGeneratingResponse) return 'processing';
+    if (isRecording && isTranscribing) return 'listening';
+    if (isRecording) return 'listening';
+    return 'idle';
+  }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing]);
+
+  // Determine status text
+  const statusText = useMemo(() => {
+    if (isSpeaking) return 'Говорю...';
+    if (isGeneratingResponse) return 'Думаю...';
+    if (isRecording) return 'Слушаю...';
+    return 'Нажмите на микрофон, чтобы начать';
+  }, [isSpeaking, isGeneratingResponse, isRecording]);
+
   return (
-    <div className="min-h-screen bg-background">
-      <Navigation />
+    <div className="relative w-full h-screen bg-black overflow-hidden flex flex-col items-center justify-center font-sans">
+      {/* Background Stars */}
+      <BackgroundStars />
 
-      <main className="container mx-auto px-4 pt-24 pb-16">
-        <div className="max-w-4xl mx-auto">
-          <div className="text-center mb-8">
-            <h1 className="text-3xl md:text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              🎤 Голосовое общение
-            </h1>
-            <p className="text-muted-foreground text-lg">
-              {getCourseDisplayName(courseId || "")}
-            </p>
+      {/* Navigation / Back Button */}
+      <div className="absolute top-6 left-6 z-50">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-white/70 hover:text-white hover:bg-white/10 rounded-full w-12 h-12"
+          onClick={() => navigate(-1)}
+        >
+          <ArrowLeft className="w-6 h-6" />
+        </Button>
+      </div>
 
+      {/* Main Content */}
+      <div className="z-10 flex flex-col items-center justify-center space-y-12 w-full max-w-4xl px-4">
+
+        {/* Assistant Orb */}
+        <div className="relative flex items-center justify-center">
+          <AssistantOrb state={orbState} />
+        </div>
+
+        {/* Status & Transcript */}
+        <div className="flex flex-col items-center space-y-6 text-center max-w-2xl">
+          <div className="text-white/90 text-2xl font-light tracking-widest uppercase animate-pulse">
+            {statusText}
           </div>
 
-          <Card className="shadow-2xl animate-fade-in">
-            <CardContent className="p-8 md:p-12">
-              <div className="text-center space-y-6">
-                {/* Status Indicator */}
-                <div className="relative inline-block">
-                  <div className={`w-32 h-32 md:w-40 md:h-40 rounded-full ${
-                    isRecording ? 'bg-green-500/20' : 'bg-muted'
-                  } flex items-center justify-center transition-all duration-300`}>
-                    <Mic className={`w-16 h-16 md:w-20 md:h-20 ${
-                      isRecording ? 'text-green-500' : 'text-muted-foreground'
-                    }`} />
-                  </div>
-                  {isRecording && (
-                    <div className="absolute inset-0 rounded-full animate-ping bg-green-500/20"></div>
-                  )}
-                </div>
-
-                {/* Status Text */}
-                <div>
-                  <h2 className="text-2xl font-bold mb-2">
-                    {isRecording ? "Идет запись и распознавание" : "Готов к записи"}
-                  </h2>
-                  <p className="text-muted-foreground mb-3">
-                    {isRecording
-                      ? "Говорите свободно - текст выводится в консоль"
-                      : "Нажмите кнопку для начала записи и распознавания речи"
-                    }
-                  </p>
-
-                  {/* Recording Status */}
-                  <div className="flex flex-wrap justify-center gap-2">
-                    {isRecording && (
-                      <Badge variant="secondary" className="bg-green-100 text-green-700 border-green-200 animate-pulse">
-                        🎤 {useFallbackTranscription ? 'Запись (OpenAI)...' : 'Запись активна...'}
-                      </Badge>
-                    )}
-                    {isTranscribing && (
-                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                        Распознавание...
-                      </Badge>
-                    )}
-                    {isGeneratingResponse && (
-                      <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-200">
-                        <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                        🤖 Думаю...
-                      </Badge>
-                    )}
-                    {isSpeaking && (
-                      <Badge variant="outline" className="bg-orange-50 text-orange-700 border-orange-200 animate-pulse">
-                        🔊 Говорю...
-                      </Badge>
-                    )}
-                    {!isRecording && (
-                      <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
-                        🔇 Ожидание начала
-                      </Badge>
-                    )}
-                  </div>
-                </div>
-
-                {/* Control Buttons */}
-                <div className="flex flex-wrap justify-center gap-4">
-                  <Button
-                    variant="outline"
-                    size="lg"
-                    className={`w-16 h-16 rounded-full ${isMicEnabled ? 'bg-green-50 border-green-200 hover:bg-green-100' : 'bg-red-50 border-red-200 hover:bg-red-100'}`}
-                    onClick={handleToggleMic}
-                    title={isMicEnabled ? "Отключить микрофон" : "Включить микрофон"}
-                  >
-                    {isMicEnabled ? (
-                      <Mic className="w-6 h-6 text-green-600" />
-                    ) : (
-                      <MicOff className="w-6 h-6 text-red-600" />
-                    )}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="lg"
-                    className={`w-16 h-16 rounded-full ${isSoundEnabled ? 'bg-blue-50 border-blue-200 hover:bg-blue-100' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}
-                    onClick={handleToggleSound}
-                    title={isSoundEnabled ? "Отключить звук" : "Включить звук"}
-                  >
-                    {isSoundEnabled ? (
-                      <Volume2 className="w-6 h-6 text-blue-600" />
-                    ) : (
-                      <VolumeX className="w-6 h-6 text-gray-600" />
-                    )}
-                  </Button>
-                </div>
-
-                {/* Main Action Button */}
-                <Button
-                  size="lg"
-                  className={`w-full max-w-xs h-14 text-lg ${isRecording ? 'bg-red-500 hover:bg-red-600' : ''}`}
-                  onClick={handleStartStopRecording}
-                >
-                  {isRecording ? (
-                    <>
-                      <PhoneOff className="w-5 h-5 mr-2" />
-                      Остановить запись
-                    </>
-                  ) : (
-                    <>
-                      <Phone className="w-5 h-5 mr-2" />
-                      Начать урок
-                    </>
-                  )}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
+          {transcriptDisplay && (
+            <div className="text-white/70 text-lg font-light leading-relaxed backdrop-blur-sm bg-black/30 p-4 rounded-xl border border-white/10 transition-all duration-300">
+              "{transcriptDisplay}"
+            </div>
+          )}
         </div>
-      </main>
+      </div>
+
+      {/* Controls */}
+      <div className="absolute bottom-12 z-50 flex items-center space-x-8">
+        {/* Sound Toggle */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className={`w-14 h-14 rounded-full transition-all duration-300 ${isSoundEnabled ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'}`}
+          onClick={handleToggleSound}
+        >
+          {isSoundEnabled ? <Volume2 className="w-6 h-6" /> : <VolumeX className="w-6 h-6" />}
+        </Button>
+
+        {/* Mic Toggle (Main Action) */}
+        <Button
+          variant="default"
+          size="icon"
+          className={`w-20 h-20 rounded-full shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] transition-all duration-500 transform hover:scale-105 ${isRecording
+            ? 'bg-red-500 hover:bg-red-600 shadow-[0_0_50px_-10px_rgba(239,68,68,0.5)]'
+            : 'bg-white text-black hover:bg-gray-200'
+            }`}
+          onClick={handleStartStopRecording}
+        >
+          {isRecording ? (
+            <MicOff className="w-8 h-8" />
+          ) : (
+            <Mic className="w-8 h-8" />
+          )}
+        </Button>
+
+        {/* End Call (Exit) */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="w-14 h-14 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 hover:text-red-300 transition-all duration-300"
+          onClick={() => navigate(-1)}
+        >
+          <PhoneOff className="w-6 h-6" />
+        </Button>
+      </div>
     </div>
   );
 };

@@ -24,7 +24,7 @@ const CourseChat = () => {
   const { courseId } = useParams();
   const { token } = useAuth();
   const { toast } = useToast();
-  
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -71,7 +71,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
+      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -165,14 +165,14 @@ const CourseChat = () => {
         formData.append('messageType', 'voice');
         formData.append('token', token);
 
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal
         });
       } else {
         // Handle text message
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -192,7 +192,7 @@ const CourseChat = () => {
 
       // Check if streaming response
       const contentType = response.headers.get('content-type');
-      
+
       if (contentType?.includes('text/event-stream')) {
         // Handle streaming response
         const reader = response.body?.getReader();
@@ -211,19 +211,19 @@ const CourseChat = () => {
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
-                  
+
                   if (data.content) {
                     fullContent += data.content;
-                    setMessages(prev => prev.map(m => 
-                      m.isStreaming 
+                    setMessages(prev => prev.map(m =>
+                      m.isStreaming
                         ? { ...m, content: fullContent }
                         : m
                     ));
                   }
-                  
+
                   if (data.done) {
-                    setMessages(prev => prev.map(m => 
-                      m.isStreaming 
+                    setMessages(prev => prev.map(m =>
+                      m.isStreaming
                         ? { ...m, id: data.messageId, isStreaming: false }
                         : m
                     ));
@@ -242,8 +242,8 @@ const CourseChat = () => {
       } else {
         // Handle non-streaming response (fallback)
         const data = await response.json();
-        setMessages(prev => prev.map(m => 
-          m.isStreaming 
+        setMessages(prev => prev.map(m =>
+          m.isStreaming
             ? { ...m, id: data.messageId, content: data.message, isStreaming: false }
             : m
         ));
@@ -299,7 +299,7 @@ const CourseChat = () => {
   const sendVoiceMessage = async (audioFile: File) => {
     // Stop any currently playing audio when sending a new voice message (interruption)
     stopCurrentAudio();
-    
+
     setIsSending(true);
 
     // Add user message immediately
@@ -329,7 +329,7 @@ const CourseChat = () => {
       formData.append('messageType', 'voice');
       formData.append('token', token || '');
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
         method: 'POST',
         body: formData,
         signal: abortControllerRef.current.signal
@@ -503,7 +503,7 @@ const CourseChat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch('http://localhost:4000/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -636,46 +636,44 @@ const CourseChat = () => {
                 messages.map((message, index) => (
                   <div
                     key={message.id}
-                  className={`flex ${
-                    message.role === "user" ? "justify-end" : "justify-start"
-                  } animate-fade-in`}
+                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"
+                      } animate-fade-in`}
                     style={{ animationDelay: `${index * 50}ms` }}
-                >
-                  <div
-                    className={`max-w-[85%] md:max-w-[80%] rounded-2xl px-4 py-3 ${
-                      message.role === "user"
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted"
-                    }`}
                   >
+                    <div
+                      className={`max-w-[85%] md:max-w-[80%] rounded-2xl px-4 py-3 ${message.role === "user"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted"
+                        }`}
+                    >
                       {message.role === "assistant" && (
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          <Bot className="w-4 h-4 text-primary" />
-                          <span className="text-xs font-semibold text-primary">
-                            AI Преподаватель
-                          </span>
-                          {message.isStreaming && (
-                            <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <Bot className="w-4 h-4 text-primary" />
+                            <span className="text-xs font-semibold text-primary">
+                              AI Преподаватель
+                            </span>
+                            {message.isStreaming && (
+                              <Loader2 className="w-3 h-3 animate-spin text-primary" />
+                            )}
+                          </div>
+                          {!message.isStreaming && message.content && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => speakMessage(message.id, message.content)}
+                              className="h-6 w-6 p-0 hover:bg-primary/10"
+                              title={speakingMessageId === message.id ? "Остановить озвучку" : "Озвучить сообщение"}
+                            >
+                              {speakingMessageId === message.id ? (
+                                <VolumeX className="w-3 h-3 text-primary" />
+                              ) : (
+                                <Volume2 className="w-3 h-3 text-primary" />
+                              )}
+                            </Button>
                           )}
                         </div>
-                        {!message.isStreaming && message.content && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => speakMessage(message.id, message.content)}
-                            className="h-6 w-6 p-0 hover:bg-primary/10"
-                            title={speakingMessageId === message.id ? "Остановить озвучку" : "Озвучить сообщение"}
-                          >
-                            {speakingMessageId === message.id ? (
-                              <VolumeX className="w-3 h-3 text-primary" />
-                            ) : (
-                              <Volume2 className="w-3 h-3 text-primary" />
-                            )}
-                          </Button>
-                        )}
-                      </div>
-                    )}
+                      )}
                       <div className="text-sm leading-relaxed markdown-content">
                         <ReactMarkdown
                           components={MarkdownComponents}
@@ -685,9 +683,9 @@ const CourseChat = () => {
                         </ReactMarkdown>
                       </div>
                       {!message.isStreaming && (
-                    <span className="text-xs opacity-70 mt-1 block">
+                        <span className="text-xs opacity-70 mt-1 block">
                           {formatMessageTime(message.created_at)}
-                    </span>
+                        </span>
                       )}
                     </div>
                   </div>
@@ -749,20 +747,19 @@ const CourseChat = () => {
 
                 <Button
                   size="icon"
-                  className={`shrink-0 transition-colors ${
-                    hasContent
+                  className={`shrink-0 transition-colors ${hasContent
                       ? 'bg-primary hover:bg-primary/90'
                       : isRecording
-                      ? 'bg-red-500 hover:bg-red-700 text-white animate-pulse'
-                      : 'bg-red-500 hover:bg-red-600 text-white'
-                  }`}
+                        ? 'bg-red-500 hover:bg-red-700 text-white animate-pulse'
+                        : 'bg-red-500 hover:bg-red-600 text-white'
+                    }`}
                   onClick={hasContent ? handleSend : handleVoiceMessage}
                   disabled={isSending}
                 >
                   {isSending ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : hasContent ? (
-                  <Send className="w-4 h-4" />
+                    <Send className="w-4 h-4" />
                   ) : isRecording ? (
                     <Square className="w-4 h-4" />
                   ) : (

@@ -19,14 +19,14 @@ const upload = multer({
     });
     // Accept only audio files supported by Whisper
     if (file.mimetype.startsWith('audio/') ||
-        file.mimetype === 'application/octet-stream' ||
-        file.originalname.endsWith('.webm') ||
-        file.originalname.endsWith('.wav') ||
-        file.originalname.endsWith('.mp3') ||
-        file.originalname.endsWith('.m4a') ||
-        file.originalname.endsWith('.mp4') ||
-        file.originalname.endsWith('.flac') ||
-        file.originalname.endsWith('.ogg')) {
+      file.mimetype === 'application/octet-stream' ||
+      file.originalname.endsWith('.webm') ||
+      file.originalname.endsWith('.wav') ||
+      file.originalname.endsWith('.mp3') ||
+      file.originalname.endsWith('.m4a') ||
+      file.originalname.endsWith('.mp4') ||
+      file.originalname.endsWith('.flac') ||
+      file.originalname.endsWith('.ogg')) {
       cb(null, true);
     } else {
       console.error('Rejected file type:', file.mimetype);
@@ -38,7 +38,7 @@ const upload = multer({
 dotenv.config();
 
 const app = express();
-const PORT = 3001;
+const PORT = 4000;
 const JWT_SECRET = process.env.JWT_SECRET || 'windexs-ai-learn-secret-key-2024';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
@@ -108,7 +108,7 @@ const authenticateToken = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    
+
     // Check if session exists and is valid, create/update automatically
     const session = db.prepare('SELECT * FROM sessions WHERE token = ?').get(token);
     if (session) {
@@ -321,7 +321,7 @@ app.put('/api/auth/password', authenticateToken, async (req, res) => {
 app.delete('/api/auth/account', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    
+
     // Delete all sessions
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
     // Delete user courses
@@ -384,7 +384,7 @@ app.post('/api/courses', authenticateToken, (req, res) => {
         SET updated_at = datetime("now")
         WHERE id = ?
       `).run(existingCourse.id);
-      
+
       const course = db.prepare('SELECT * FROM user_courses WHERE id = ?').get(existingCourse.id);
       return res.json({ course, message: 'Курс уже добавлен' });
     }
@@ -399,7 +399,7 @@ app.post('/api/courses', authenticateToken, (req, res) => {
     `).run(courseId, userId, subjectId, subjectName, grade || null, goal || null, goalName || null, icon || '📚', nextLesson);
 
     const course = db.prepare('SELECT * FROM user_courses WHERE id = ?').get(courseId);
-    
+
     res.status(201).json({ course, message: 'Курс добавлен в библиотеку' });
   } catch (error) {
     console.error('Add course error:', error);
@@ -473,7 +473,7 @@ function getFirstLesson(subjectId, grade, goal) {
   };
 
   const subjectLessons = lessons[subjectId] || { default: 'Введение' };
-  
+
   if (goal && subjectLessons[goal]) {
     return subjectLessons[goal];
   }
@@ -675,7 +675,7 @@ ${homeworkContext}
 // Get or create user profile
 function getOrCreateUserProfile(userId) {
   let profile = db.prepare('SELECT * FROM user_profiles WHERE user_id = ?').get(userId);
-  
+
   if (!profile) {
     const profileId = uuidv4();
     db.prepare(`
@@ -684,7 +684,7 @@ function getOrCreateUserProfile(userId) {
     `).run(profileId, userId);
     profile = db.prepare('SELECT * FROM user_profiles WHERE user_id = ?').get(userId);
   }
-  
+
   return profile;
 }
 
@@ -1004,7 +1004,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     if (!openai) {
       // Fallback response without OpenAI
       const fallbackResponse = generateFallbackResponse(content, courseId);
-      
+
       const assistantMessageId = uuidv4();
       db.prepare(`
         INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
@@ -1018,9 +1018,9 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
         WHERE user_id = ?
       `).run(userId);
 
-      return res.json({ 
+      return res.json({
         message: fallbackResponse,
-        messageId: assistantMessageId 
+        messageId: assistantMessageId
       });
     }
 
@@ -1147,7 +1147,7 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
 
   } catch (error) {
     console.error('Chat message error:', error);
-    
+
     if (!res.headersSent) {
       res.status(500).json({ error: 'Ошибка при обработке сообщения' });
     } else {
@@ -1251,7 +1251,7 @@ app.put('/api/homework/:homeworkId', authenticateToken, (req, res) => {
     if (status) {
       updates.push('status = ?');
       values.push(status);
-      
+
       if (status === 'submitted') {
         updates.push('submitted_at = datetime("now")');
       } else if (status === 'checked' || status === 'completed') {

@@ -48,7 +48,7 @@ const HomeChat = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
+      const response = await fetch('http://localhost:4000/api/chat/general', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -128,17 +128,15 @@ const HomeChat = () => {
                 {messages.map((message, index) => (
                   <div
                     key={index}
-                    className={`flex ${
-                      message.role === "user" ? "justify-end" : "justify-start"
-                    } animate-fade-in`}
+                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"
+                      } animate-fade-in`}
                     style={{ animationDelay: `${index * 50}ms` }}
                   >
                     <div
-                      className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                        message.role === "user"
+                      className={`max-w-[80%] rounded-2xl px-4 py-3 ${message.role === "user"
                           ? "bg-primary text-primary-foreground"
                           : "bg-muted"
-                      }`}
+                        }`}
                     >
                       {message.role === "ai" && (
                         <div className="flex items-center gap-2 mb-1">
@@ -147,9 +145,8 @@ const HomeChat = () => {
                         </div>
                       )}
                       <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
-                      <div className={`text-xs mt-2 ${
-                        message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
-                      }`}>
+                      <div className={`text-xs mt-2 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
+                        }`}>
                         {message.timestamp.toLocaleTimeString('ru-RU', {
                           hour: '2-digit',
                           minute: '2-digit'
