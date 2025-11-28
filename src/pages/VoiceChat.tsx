@@ -1,13 +1,24 @@
+/**
+ * Голосовой чат с ИИ-учителем
+ *
+ * Архитектура моделей:
+ * - STT: Web Speech API (основной) + OpenAI Whisper (fallback)
+ * - LLM: GPT-5.1 (запросы отправляются на сервер teacher.windexs.ru)
+ * - TTS: OpenAI TTS с голосом 'nova' (HD модель для образования)
+ */
+
 import Navigation from "@/components/Navigation";
 import { useParams } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
 import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
+import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase } from "@/utils/llmMonitoring";
+import { updateLearnedAlternatives } from "@/utils/llmMonitoring";
 
 // Web Speech API types
 
@@ -15,6 +26,9 @@ import { useToast } from "@/hooks/use-toast";
 const VOICE_DETECTION_THRESHOLD = 15; // Базовый порог громкости для обнаружения голоса
 const ECHO_SIMILARITY_THRESHOLD = 0.7; // Порог схожести для определения эха
 const ECHO_BUFFER_TIME = 500; // Время в мс после начала TTS, когда эхо наиболее вероятно
+
+// Модель LLM для голосового чата
+const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
@@ -305,7 +319,8 @@ const VoiceChat = () => {
     };
 
     recognition.onspeechstart = () => {
-      console.log('🎤 Speech started - stopping assistant speech');
+      console.log('🎤 Speech started - IMMEDIATELY stopping assistant speech');
+      // Прерываем TTS НЕМЕДЛЕННО при начале любой речи пользователя
       stopAssistantSpeech();
     };
 
@@ -333,13 +348,30 @@ const VoiceChat = () => {
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
 
+        // ДОПОЛНИТЕЛЬНОЕ ПРЕРЫВАНИЕ: прерываем TTS при начале любой речевой активности
+        if (isPlayingAudioRef.current) {
+          console.log('🚨 Речевая активность обнаружена - НЕМЕДЛЕННО прерываем TTS');
+          console.log('🛑 Прерывание TTS из-за речи пользователя');
+          stopAssistantSpeech();
+        }
 
         // ПОКАЗЫВАЕМ РЕЧЬ ПОЛЬЗОВАТЕЛЯ НЕМЕДЛЕННО
         console.log('👤 Interim распознанный текст:', interimTranscript);
 
-        // ПРЕРЫВАНИЕ TTS: если есть активный TTS и уверенность достаточная
-        if (isPlayingAudioRef.current && result[0].confidence > 0.2 && interimTranscript.length > 1) {
-          console.log('🛑 Пользователь прерывает TTS речью:', interimTranscript);
+        // ПРЕРЫВАНИЕ TTS: прерываем при ЛЮБОЙ речи пользователя, даже с низкой уверенностью
+        if (isPlayingAudioRef.current && interimTranscript.length > 0) {
+          console.log('🛑 Пользователь прерывает TTS речью (даже с низкой уверенностью):', interimTranscript, `(уверенность: ${result[0].confidence})`);
+
+          // Проверяем, является ли это командой прерывания
+          const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
+          const isInterruptCommand = interruptCommands.some(cmd =>
+            interimTranscript.toLowerCase().includes(cmd)
+          );
+
+          if (isInterruptCommand) {
+            console.log('🚨 Команда прерывания обнаружена:', interimTranscript);
+          }
+
           stopAssistantSpeech();
 
           // Сохраняем текст для финальной обработки
@@ -367,12 +399,28 @@ const VoiceChat = () => {
         const transcript = result[0].transcript.trim();
         console.log('👤 Финальный распознанный текст:', transcript);
 
+        // Проверяем, является ли это командой прерывания
+        const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
+        const isInterruptCommand = interruptCommands.some(cmd =>
+          transcript.toLowerCase().includes(cmd)
+        );
 
         if (transcript) {
           // Stop any current TTS (на случай если не было прерывания через interim)
           if (isSpeaking) {
             console.log('🎤 Останавливаю TTS...');
             stopCurrentTTS();
+          }
+
+          // Обработка команд прерывания
+          if (isInterruptCommand) {
+            console.log('🚨 Обнаружена команда прерывания в финальном результате:', transcript);
+            toast({
+              title: "Готово",
+              description: "Озвучка прервана",
+              variant: "default"
+            });
+            return; // Не отправляем на LLM
           }
 
           // Save current transcript for context
@@ -390,8 +438,12 @@ const VoiceChat = () => {
           // Small delay to ensure previous TTS is fully stopped
           await new Promise(resolve => setTimeout(resolve, 100));
 
-          // Speak the response
-          await speakText(llmResponse);
+          // Speak the response (only if not empty)
+          if (llmResponse && llmResponse.trim()) {
+            await speakText(llmResponse);
+          } else {
+            console.warn('⚠️ Пропускаем озвучивание пустого ответа');
+          }
 
           console.log('✅ Ответ озвучен');
         }
@@ -487,8 +539,12 @@ const VoiceChat = () => {
           // Send to LLM
           try {
             const llmResponse = await sendToLLM(transcript);
-            await speakText(llmResponse);
-            console.log('✅ Ответ озвучен');
+            if (llmResponse && llmResponse.trim()) {
+              await speakText(llmResponse);
+              console.log('✅ Ответ озвучен');
+            } else {
+              console.warn('⚠️ Пропускаем озвучивание пустого ответа');
+            }
           } catch (error) {
             console.error('❌ Ошибка обработки ответа:', error);
           }
@@ -664,7 +720,14 @@ const VoiceChat = () => {
   }, [courseId]);
 
   // Send transcribed text to LLM with Julia's system prompt
-  const sendToLLM = useCallback(async (userMessage: string): Promise<string> => {
+  const sendToLLM = useCallback(async (userMessage: string, retryCount: number = 0): Promise<string> => {
+    const MAX_RETRIES = 3; // Увеличили количество попыток
+    const originalMessage = userMessage;
+
+    console.log('🚀 sendToLLM вызвана с сообщением:', `"${userMessage}"`, retryCount > 0 ? `(попытка ${retryCount + 1}/${MAX_RETRIES + 1})` : '');
+    console.log('📏 Длина сообщения:', userMessage.length);
+    console.log('🤖 Используется модель:', VOICE_CHAT_LLM_MODEL);
+
     setIsGeneratingResponse(true);
 
     // Захватываем generationId перед асинхронными операциями
@@ -672,6 +735,42 @@ const VoiceChat = () => {
 
     try {
       console.log('🤖 Отправка сообщения в LLM...');
+
+      // Мониторинг запроса
+      monitorLLMRequest(userMessage, courseId || 'unknown');
+
+      // Проверка на подозрительное сообщение (для всех попыток, но с разными стратегиями)
+      if (isSuspiciousMessage(userMessage)) {
+        console.warn('⚠️ Обнаружено подозрительное сообщение:', userMessage);
+        const safeAlternative = generateSafeAlternative(userMessage);
+
+        // Для retry используем более агрессивную замену
+        if (retryCount > 0) {
+          // Более радикальная замена для повторных попыток
+          userMessage = safeAlternative.replace(/работ[а-я]*/gi, 'учимся')
+                                     .replace(/давай/gi, 'скажи')
+                                     .replace(/продолж[а-я]*/gi, 'давай')
+                                     .replace(/начн[а-я]*/gi, 'скажи');
+          console.log('🔄 Радикальная замена для retry:', userMessage);
+        } else if (safeAlternative !== userMessage) {
+          console.log('🔄 Замена на безопасную альтернативу:', safeAlternative);
+          userMessage = safeAlternative;
+        }
+      }
+
+      // Для retry попыток добавляем контекст
+      if (retryCount > 0) {
+        const prefixes = [
+          'Пожалуйста, объясни:',
+          'Расскажи мне про:',
+          'Помоги мне с:',
+          'Я хочу узнать:',
+          'Объясни, пожалуйста:'
+        ];
+        const prefix = prefixes[retryCount - 1] || 'Скажи мне:';
+        userMessage = `${prefix} ${userMessage}`;
+        console.log('📝 Добавлен префикс для retry:', userMessage);
+      }
 
       // Get user profile if not loaded
       let profile = userProfile;
@@ -747,7 +846,8 @@ const VoiceChat = () => {
           // Сервер построит системный промт учителя Юлии сам.
           content: messageContent,
           messageType: 'voice',
-          interrupted: isSpeaking // Flag to indicate if this was an interruption
+          interrupted: isSpeaking, // Flag to indicate if this was an interruption
+          model: VOICE_CHAT_LLM_MODEL // Использовать модель GPT-5.1 для голосового чата
         })
       });
 
@@ -771,6 +871,18 @@ const VoiceChat = () => {
         const text = await response.text();
         console.log('📥 Сырой ответ сервера:', text.substring(0, 200));
         data = JSON.parse(text);
+
+        // Additional validation of server response
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid response format from server');
+        }
+
+        // Check if message is empty or invalid
+        if (data.message === null || data.message === undefined) {
+          console.warn('⚠️ Сервер вернул null/undefined сообщение');
+          return 'Извини, у меня возникли технические сложности. Попробуй задать вопрос еще раз.';
+        }
+
       } catch (parseError) {
         console.error('❌ Ошибка парсинга JSON:', parseError);
         throw new Error('Invalid JSON response from server');
@@ -779,12 +891,81 @@ const VoiceChat = () => {
       // Проверяем, не было ли прерывания генерации
       if (generationIdRef.current !== startGenId) {
         console.log('🛑 Генерация ответа была прервана');
+        console.log('🎯 sendToLLM возвращает пустой результат из-за прерывания');
         return '';
       }
 
       console.log('✅ LLM ответил:', data.message);
 
-      return data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+      const finalMessage = data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+
+      // Мониторинг ответа
+      const wasSuccessful = finalMessage.trim().length >= 10 &&
+                           finalMessage !== 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+
+      monitorLLMResponse(
+        userMessage,
+        courseId || 'unknown',
+        finalMessage,
+        data.messageId || 'unknown',
+        Date.now() - startGenId,
+        wasSuccessful ? undefined : 'empty_response'
+      );
+
+      // Автообучение: запоминаем проблемные фразы
+      updateLearnedAlternatives(userMessage, wasSuccessful);
+
+      // Дополнительная проверка на пустой или слишком короткий ответ
+      if (!finalMessage.trim() || finalMessage.trim().length < 10) { // Увеличили минимальную длину
+        console.warn('⚠️ Получен подозрительно короткий ответ от LLM:', `"${finalMessage}"`, `(длина: ${finalMessage.length})`);
+
+        // Проверяем, можем ли повторить запрос
+        if (retryCount < MAX_RETRIES) {
+          console.log(`🔄 Повторяем запрос (попытка ${retryCount + 1}/${MAX_RETRIES + 1})`);
+
+          // Более длинная пауза для retry (избегаем rate limiting)
+          const delay = Math.min(2000 * Math.pow(2, retryCount), 10000); // Экспоненциальная задержка
+          await new Promise(resolve => setTimeout(resolve, delay));
+
+          // Разные стратегии retry в зависимости от типа сообщения
+          let retryMessage: string;
+
+          if (retryCount === 0) {
+            // Первая retry: добавляем вежливость и контекст
+            retryMessage = `Будь добр, ${originalMessage.toLowerCase()}`;
+          } else if (retryCount === 1) {
+            // Вторая retry: упрощаем или используем безопасную альтернативу
+            if (originalMessage.length > 30) {
+              retryMessage = originalMessage.substring(0, 25) + '...';
+            } else {
+              retryMessage = generateSafeAlternative(originalMessage);
+            }
+          } else {
+            // Третья retry: супер-безопасная фраза
+            retryMessage = generateSuperSafePhrase(originalMessage);
+          }
+
+          console.log(`🎯 Новая попытка (${retryCount + 1}/${MAX_RETRIES + 1}) с: "${retryMessage}"`);
+          return sendToLLM(retryMessage, retryCount + 1);
+        }
+
+        // Все попытки исчерпаны - возвращаем полезный fallback
+        console.error('❌ Все retry попытки исчерпаны, возвращаем fallback');
+
+        // Умный fallback в зависимости от типа сообщения
+        if (isSuspiciousMessage(originalMessage)) {
+          return 'Давай лучше займемся уроком русского языка! 📚 Что тебя интересует в русском языке?';
+        } else if (originalMessage.toLowerCase().includes('математик') || originalMessage.toLowerCase().includes('алгебр') || originalMessage.toLowerCase().includes('геометр')) {
+          return 'Давай вернемся к русскому языку - это наш основной предмет! 📖 Что тебя интересует в русском языке?';
+        } else {
+          return 'Извини, сейчас у меня небольшие технические сложности. Давай попробуем поговорить о русском языке! 📚 Что ты хочешь изучить?';
+        }
+      }
+
+      console.log('🎯 sendToLLM возвращает результат:', `"${finalMessage}"`);
+      console.log('📏 Длина ответа:', finalMessage.length);
+
+      return finalMessage;
 
     } catch (error) {
       console.error('❌ Ошибка LLM:', error);
@@ -793,6 +974,7 @@ const VoiceChat = () => {
         stack: error.stack,
         name: error.name
       });
+      console.log('🎯 sendToLLM возвращает ошибочный результат');
       return 'Извини, у меня технические неполадки. Попробуй еще раз через минуту.';
     } finally {
       setIsGeneratingResponse(false);
@@ -811,6 +993,12 @@ const VoiceChat = () => {
 
   // Convert text to speech using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
+    // Check for empty or invalid text
+    if (!text || !text.trim()) {
+      console.warn('⚠️ Попытка озвучить пустой текст, пропускаем');
+      return;
+    }
+
     // Don't speak if sound is disabled
     if (!isSoundEnabled) {
       console.log('🔇 Звук отключен, пропускаем озвучку');
@@ -911,6 +1099,7 @@ const VoiceChat = () => {
         console.error('❌ Ошибка воспроизведения аудио:', event);
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
+        isPlayingAudioRef.current = false; // Сбрасываем флаг воспроизведения
         setIsSpeaking(false);
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
@@ -1008,16 +1197,16 @@ const VoiceChat = () => {
     <div className="min-h-screen bg-background">
       <Navigation />
 
-
       <main className="container mx-auto px-4 pt-24 pb-16">
-        <div className="max-w-2xl mx-auto">
-          <div className="text-center mb-8 animate-fade-in">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-8">
             <h1 className="text-3xl md:text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              Голосовое общение
+              🎤 Голосовое общение
             </h1>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-lg">
               {getCourseDisplayName(courseId || "")}
             </p>
+
           </div>
 
           <Card className="shadow-2xl animate-fade-in">
