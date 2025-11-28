@@ -38,9 +38,6 @@ const ECHO_BUFFER_TIME = 500; // Время в мс после начала TTS,
 
 // Модель LLM для голосового чата
 const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
-
-// Модель LLM для голосового чата
-const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
