@@ -1,21 +1,46 @@
+/**
+ * Голосовой чат с ИИ-учителем
+ *
+ * Архитектура моделей:
+ * - STT: Web Speech API (основной) + OpenAI Whisper (fallback)
+ * - LLM: GPT-5.1 (запросы отправляются на сервер teacher.windexs.ru)
+ * - TTS: OpenAI TTS с голосом 'nova' (HD модель для образования)
+ *
+ * Особенности:
+ * - Продвинутый barge-in: TTS прерывается при любой речи пользователя
+ * - Retry логика: до 3 попыток с разными стратегиями при пустых ответах
+ * - Мониторинг: отслеживание проблемных фраз и паттернов
+ * - Автообучение: система учится на неудачных запросах
+ * - Обнаружение эха: спектральный анализ для фильтрации TTS эха
+ */
+
 import Navigation from "@/components/Navigation";
 import { useParams } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
 import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import {
-  TTSEchoDetector,
-  TextCorrelationDetector,
-  SimpleMLEchoDetector,
-  ECHO_DETECTION_CONFIG
-} from "@/utils/echoDetection";
+import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase } from "@/utils/llmMonitoring";
+import { updateLearnedAlternatives } from "@/utils/llmMonitoring";
+import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase } from "@/utils/llmMonitoring";
+import { updateLearnedAlternatives } from "@/utils/llmMonitoring";
 
 // Web Speech API types
+
+// Константы для обнаружения голоса и фильтрации эха
+const VOICE_DETECTION_THRESHOLD = 15; // Базовый порог громкости для обнаружения голоса
+const ECHO_SIMILARITY_THRESHOLD = 0.7; // Порог схожести для определения эха
+const ECHO_BUFFER_TIME = 500; // Время в мс после начала TTS, когда эхо наиболее вероятно
+
+// Модель LLM для голосового чата
+const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
+
+// Модель LLM для голосового чата
+const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
@@ -61,348 +86,97 @@ const VoiceChat = () => {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
 
-  // Детекторы эха TTS
-  const [ttsEchoDetector] = useState(() => new TTSEchoDetector());
-  const [textCorrelationDetector] = useState(() => new TextCorrelationDetector());
-  const [mlEchoDetector] = useState(() => new SimpleMLEchoDetector());
-
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
-  const lastSentMessageRef = useRef<string>(''); // Track last message sent to LLM
   const cleanTranscriptRef = useRef<string>(''); // Track clean transcript without TTS echo
   const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
-  const lastTTSEndTimeRef = useRef<number>(0); // Track when TTS ended for post-TTS echo detection
-  const ttsFingerprintRef = useRef<Float32Array | null>(null); // Store spectral fingerprint of current TTS audio
 
-  // Audio level monitoring for TTS interruption
+  // Механизм отслеживания генерации для отмены при прерывании
+  const generationIdRef = useRef<number>(0);
+
+  // Аудио контекст и анализатор для мониторинга громкости
   const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const microphoneRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const audioLevelIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
+  const microphoneSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const volumeMonitorRef = useRef<number | null>(null);
+
+  // Состояние воспроизведения аудио
+  const isPlayingAudioRef = useRef<boolean>(false);
+
+  // Очередь аудио для последовательного воспроизведения
+  const audioQueueRef = useRef<ArrayBuffer[]>([]);
+
+  // Отслеживание прогресса озвучки для фильтрации эха
+  const ttsProgressRef = useRef<{
+    startTime: number;
+    text: string;
+    duration: number; // примерная длительность в мс
+    words: string[]; // слова по порядку
+    currentWordIndex: number;
+  } | null>(null);
   
   // Fallback recording refs (for browsers without Web Speech API)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  // СТРОГАЯ функция обнаружения эха TTS: только явное эхо длинных текстов
-  const isEchoOfTTS = useCallback((recognizedText: string, confidence = 0) => {
-    if (!currentTTSTextRef.current) {
-      return false;
+
+  // Инициализация аудио контекста для анализа
+  const initializeAudioContext = useCallback(async (): Promise<AudioContext> => {
+    if (audioContextRef.current) {
+      return audioContextRef.current;
     }
 
-    const normalizedRecognized = recognizedText.toLowerCase().trim();
-    const ttsText = currentTTSTextRef.current.toLowerCase();
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    audioContextRef.current = new AudioContextClass();
 
-    // УБИРАЕМ пунктуацию и лишние символы для чистого сравнения
-    const cleanRecognized = normalizedRecognized.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-    const cleanTts = ttsText.replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
-
-    // СТРОГИЕ условия для блокировки как эхо:
-    // 1. Точное совпадение всего текста
-    const isExactMatch = cleanTts === cleanRecognized;
-
-    // 2. Или распознанный текст содержит почти весь TTS текст (>90% длины)
-    const isAlmostFullMatch = cleanRecognized.length > 50 &&
-                             cleanTts.includes(cleanRecognized) &&
-                             cleanRecognized.length / cleanTts.length > 0.9;
-
-    // 3. Или TTS текст содержит почти весь распознанный текст (>90% длины)
-    const isAlmostFullReverseMatch = cleanTts.length > 50 &&
-                                    cleanRecognized.includes(cleanTts) &&
-                                    cleanTts.length / cleanRecognized.length > 0.9;
-
-    // Additional spectral analysis if fingerprint is available
-    let spectralSimilarity = 0;
-    if (ttsFingerprintRef.current && typeof audioData !== 'undefined') {
-      try {
-        const inputFingerprint = computeInputFingerprint(audioData);
-        if (inputFingerprint) {
-          spectralSimilarity = compareFingerprints(ttsFingerprintRef.current, inputFingerprint);
-        }
-      } catch (error) {
-        console.warn('⚠️ Spectral analysis failed:', error);
-      }
+    // Resume context if suspended (required by some browsers)
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume();
     }
 
-    const isEcho = isExactMatch || isAlmostFullMatch || isAlmostFullReverseMatch || (spectralSimilarity > 0.85);
-
-    if (isEcho && ECHO_DETECTION_CONFIG.ENABLE_DEBUG_LOGGING) {
-      console.log('🔇 ЭХО TTS ОБНАРУЖЕНО:', {
-        recognized: cleanRecognized.substring(0, 100) + '...',
-        ttsText: cleanTts.substring(0, 100) + '...',
-        isExactMatch,
-        isAlmostFullMatch,
-        isAlmostFullReverseMatch,
-        spectralSimilarity: spectralSimilarity.toFixed(3),
-        recognizedLen: cleanRecognized.length,
-        ttsLen: cleanTts.length
-      });
-    }
-
-    return isEcho;
-  }, [currentTTSTextRef, ttsFingerprintRef]);
-
-  // Function to compute spectral fingerprint of TTS audio
-  const computeTTSFingerprint = useCallback((audioBuffer: AudioBuffer): Float32Array | null => {
-    try {
-      const channelData = audioBuffer.getChannelData(0); // Use first channel
-      const sampleRate = audioBuffer.sampleRate;
-      const fftSize = 2048;
-
-      // Simple FFT-like spectral analysis (simplified version)
-      const fingerprint = new Float32Array(fftSize / 2);
-
-      // Compute power spectrum using simple DFT approximation
-      for (let k = 0; k < fingerprint.length; k++) {
-        let real = 0, imag = 0;
-        const freq = (k * sampleRate) / fftSize;
-
-        // Sample a few points for spectral estimation
-        for (let n = 0; n < Math.min(channelData.length, 1024); n += 8) {
-          const angle = (2 * Math.PI * k * n) / fftSize;
-          real += channelData[n] * Math.cos(angle);
-          imag += channelData[n] * Math.sin(angle);
-        }
-
-        fingerprint[k] = Math.sqrt(real * real + imag * imag);
-      }
-
-      // Normalize fingerprint
-      const maxVal = Math.max(...fingerprint);
-      if (maxVal > 0) {
-        for (let i = 0; i < fingerprint.length; i++) {
-          fingerprint[i] /= maxVal;
-        }
-      }
-
-      console.log('🎯 Computed TTS spectral fingerprint');
-      return fingerprint;
-      } catch (error) {
-      console.warn('⚠️ Failed to compute TTS fingerprint:', error);
-      return null;
-    }
+    return audioContextRef.current;
   }, []);
 
-  // Initialize audio level monitoring
-  const initializeAudioMonitoring = useCallback(async () => {
-    try {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-        analyserRef.current = audioContextRef.current.createAnalyser();
-        analyserRef.current.fftSize = 256;
-        analyserRef.current.smoothingTimeConstant = 0.3;
-      }
+  // Основная функция прерывания речи ассистента
+  const stopAssistantSpeech = useCallback(() => {
+    console.log('🛑 Прерываем речь ассистента');
 
-      if (!microphoneRef.current) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        microphoneRef.current = audioContextRef.current.createMediaStreamSource(stream);
-        microphoneRef.current.connect(analyserRef.current);
-      }
+    // Увеличиваем generationId для отмены текущей генерации
+    generationIdRef.current += 1;
 
-      console.log('🎵 Audio monitoring initialized');
-    } catch (error) {
-      console.warn('⚠️ Failed to initialize audio monitoring:', error);
-    }
-  }, []);
+    // Очищаем очередь аудио
+    audioQueueRef.current = [];
 
-  // Monitor audio level and interrupt TTS if user speaks
-  const monitorAudioLevel = useCallback(() => {
-    if (!analyserRef.current || !isSpeaking) return;
-
-    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-    analyserRef.current.getByteFrequencyData(dataArray);
-
-    // Calculate RMS (Root Mean Square) as audio level
-    let sum = 0;
-    for (let i = 0; i < dataArray.length; i++) {
-      sum += dataArray[i] * dataArray[i];
-    }
-    const rms = Math.sqrt(sum / dataArray.length);
-
-    // If audio level is high enough, interrupt TTS
-    if (rms > 30) { // Adjustable threshold
-      console.log('🗣️ Detected user speech via audio monitoring, interrupting TTS...');
-      console.log('📊 Audio level:', rms.toFixed(2));
-
-      // Очистить накопленный текст перед прерыванием
-      cleanTranscriptRef.current = '';
-      console.log('🧹 Очищен накопленный текст при прерывании TTS через audio monitoring');
-
-      stopCurrentTTS();
-      clearTTSState();
-
-      // Перезапустить распознавание речи через короткую задержку
-      setTimeout(() => {
-        if (!isRecording && isMicEnabled) {
-          console.log('🎤 Перезапуск распознавания речи после прерывания TTS');
-          startSpeechRecognition();
-        }
-      }, 500); // Задержка чтобы TTS полностью остановился
-    }
-  }, [isSpeaking]);
-
-  // Start audio level monitoring when TTS starts
-  const startAudioMonitoring = useCallback(() => {
-    if (audioLevelIntervalRef.current) {
-      clearInterval(audioLevelIntervalRef.current);
-    }
-
-    audioLevelIntervalRef.current = setInterval(monitorAudioLevel, 100); // Check every 100ms
-    console.log('🎤 Started audio level monitoring');
-  }, [monitorAudioLevel]);
-
-  // Stop audio level monitoring
-  const stopAudioMonitoring = useCallback(() => {
-    if (audioLevelIntervalRef.current) {
-      clearInterval(audioLevelIntervalRef.current);
-      audioLevelIntervalRef.current = null;
-      console.log('🎤 Stopped audio level monitoring');
-    }
-  }, []);
-
-  // Function to compute spectral fingerprint of input audio
-  const computeInputFingerprint = useCallback((audioData: Float32Array): Float32Array | null => {
-    try {
-      const fftSize = 2048;
-      const fingerprint = new Float32Array(fftSize / 2);
-
-      // Compute power spectrum using simple DFT approximation
-      for (let k = 0; k < fingerprint.length; k++) {
-        let real = 0, imag = 0;
-
-        // Sample audio data for spectral estimation
-        for (let n = 0; n < Math.min(audioData.length, 512); n += 4) {
-          const angle = (2 * Math.PI * k * n) / fftSize;
-          real += audioData[n] * Math.cos(angle);
-          imag += audioData[n] * Math.sin(angle);
-        }
-
-        fingerprint[k] = Math.sqrt(real * real + imag * imag);
-      }
-
-      // Normalize fingerprint
-      const maxVal = Math.max(...fingerprint);
-      if (maxVal > 0) {
-        for (let i = 0; i < fingerprint.length; i++) {
-          fingerprint[i] /= maxVal;
-        }
-      }
-
-      return fingerprint;
-    } catch (error) {
-      console.warn('⚠️ Failed to compute input fingerprint:', error);
-      return null;
-    }
-  }, []);
-
-  // Function to compare spectral fingerprints using cosine similarity
-  const compareFingerprints = useCallback((fingerprint1: Float32Array, fingerprint2: Float32Array): number => {
-    try {
-      let dotProduct = 0;
-      let norm1 = 0;
-      let norm2 = 0;
-
-      const minLength = Math.min(fingerprint1.length, fingerprint2.length);
-
-      for (let i = 0; i < minLength; i++) {
-        dotProduct += fingerprint1[i] * fingerprint2[i];
-        norm1 += fingerprint1[i] * fingerprint1[i];
-        norm2 += fingerprint2[i] * fingerprint2[i];
-      }
-
-      if (norm1 === 0 || norm2 === 0) return 0;
-
-      return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
-    } catch (error) {
-      console.warn('⚠️ Failed to compare fingerprints:', error);
-      return 0;
-    }
-  }, []);
-
-  // Enhanced VAD with spectral analysis
-  const enhancedVAD = useCallback((audioData: Float32Array, hasSpeech: boolean): { hasSpeech: boolean, isTTSEcho: boolean } => {
-    // Basic VAD check
-    if (!hasSpeech) {
-      return { hasSpeech: false, isTTSEcho: false };
-    }
-
-    // If no TTS fingerprint available, assume it's user speech
-    if (!ttsFingerprintRef.current) {
-      return { hasSpeech: true, isTTSEcho: false };
-    }
-
-    try {
-      // Compute spectral fingerprint of input audio
-      const inputFingerprint = computeInputFingerprint(audioData);
-      if (!inputFingerprint) {
-        return { hasSpeech: true, isTTSEcho: false };
-      }
-
-      // Compare with TTS fingerprint using cosine similarity
-      const similarity = compareFingerprints(ttsFingerprintRef.current, inputFingerprint);
-
-      console.log('🔊 Enhanced VAD analysis:', {
-        hasSpeech,
-        spectralSimilarity: similarity.toFixed(3),
-        isTTSEcho: similarity > 0.8 // High similarity threshold
-      });
-
-      // If spectral similarity is high, it's likely TTS echo
-      if (similarity > 0.8) {
-        return { hasSpeech: true, isTTSEcho: true };
-      }
-
-      // Otherwise, it's genuine user speech
-      return { hasSpeech: true, isTTSEcho: false };
-    } catch (error) {
-      console.warn('⚠️ Enhanced VAD failed:', error);
-      return { hasSpeech: true, isTTSEcho: false };
-    }
-  }, [computeInputFingerprint, compareFingerprints]);
-
-  // Function to convert audio blob to AudioBuffer
-  const blobToAudioBuffer = useCallback(async (blob: Blob): Promise<AudioBuffer> => {
-    const arrayBuffer = await blob.arrayBuffer();
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    return await audioContext.decodeAudioData(arrayBuffer);
-  }, []);
-
-  // Function to stop current TTS playback
-  const stopCurrentTTS = useCallback(() => {
+    // Останавливаем текущее воспроизведение
     if (currentAudioRef.current) {
-      console.log('🛑 Агрессивно прерываю текущую озвучку...');
-
-      // Multiple ways to ensure audio stops
       try {
         currentAudioRef.current.pause();
         currentAudioRef.current.currentTime = 0;
         currentAudioRef.current.volume = 0;
         currentAudioRef.current.muted = true;
-
-        // Remove all event listeners
-        currentAudioRef.current.onplay = null;
-        currentAudioRef.current.onended = null;
-        currentAudioRef.current.onerror = null;
-
-        // Force garbage collection hint
         currentAudioRef.current.src = '';
         currentAudioRef.current.load();
       } catch (error) {
-        console.log('⚠️ Ошибка при прерывании audio:', error);
+        console.warn('⚠️ Ошибка при остановке аудио:', error);
       }
+      currentAudioRef.current = null;
+    }
 
-    currentAudioRef.current = null;
-  }
 
-  setIsSpeaking(false);
-  // Очистить накопленный текст при прерывании TTS
-  cleanTranscriptRef.current = '';
-  console.log('🧹 Очищен накопленный текст при прерывании TTS');
-  // Stop audio monitoring when TTS is interrupted
-  stopAudioMonitoring();
-}, [stopAudioMonitoring]);
+    // Сбрасываем состояние
+    isPlayingAudioRef.current = false;
+    setIsSpeaking(false);
+
+    // Сбрасываем прогресс озвучки
+    ttsProgressRef.current = null;
+  }, []);
+
+  // Function to stop current TTS playback
+  const stopCurrentTTS = useCallback(() => {
+    stopAssistantSpeech();
+  }, []);
 
   // Check if Web Speech API is available
   const isWebSpeechAvailable = useCallback(() => {
@@ -556,6 +330,23 @@ const VoiceChat = () => {
       setIsTranscribing(true);
     };
 
+    recognition.onspeechstart = () => {
+      console.log('🎤 Speech started - IMMEDIATELY stopping assistant speech');
+      // Прерываем TTS НЕМЕДЛЕННО при начале любой речи пользователя
+      stopAssistantSpeech();
+    };
+
+    // Добавляем дополнительную проверку на начало речи для фильтрации эха
+    recognition.onaudiostart = () => {
+      // Небольшая задержка чтобы дать системе определить, является ли это эхом
+      setTimeout(() => {
+        if (isPlayingAudioRef.current && speechRecognitionRef.current) {
+          console.log('🔍 Проверяем на эхо при начале аудио...');
+          // Здесь можно добавить дополнительную логику анализа
+        }
+      }, 100);
+    };
+
     recognition.onresult = async (event) => {
       // Don't process if mic is disabled
       if (!isMicEnabled) {
@@ -565,22 +356,40 @@ const VoiceChat = () => {
 
       const result = event.results[event.results.length - 1]; // Get the last result
 
-      // Обрабатываем interim результаты всегда, но проверяем на эхо TTS
+      // Обрабатываем interim результаты
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
 
-        // ПРЕРЫВАНИЕ TTS: проверяем на наличие речи для прерывания ПЕРЕД проверкой на эхо
-        if (interimTranscript.length > 2) {
-        // ПРЕРЫВАНИЕ TTS: если есть речь во время TTS - немедленно прерываем
-        // Делаем еще более чувствительным - даже низкая уверенность
-        if (isSpeaking && result[0].confidence > 0.3 && interimTranscript.length > 1) {
-            console.log('🛑 Обнаружена речь пользователя во время активного TTS, останавливаю TTS...');
-          console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
-          stopCurrentTTS();
-          // Очистить состояние TTS после прерывания
-          clearTTSState();
+        // ДОПОЛНИТЕЛЬНОЕ ПРЕРЫВАНИЕ: прерываем TTS при начале любой речевой активности
+        if (isPlayingAudioRef.current) {
+          console.log('🚨 Речевая активность обнаружена - НЕМЕДЛЕННО прерываем TTS');
+          console.log('🛑 Прерывание TTS из-за речи пользователя');
+          stopAssistantSpeech();
+        }
 
-          // Остановить распознавание речи временно, чтобы предотвратить повторные ложные срабатывания
+        // ПОКАЗЫВАЕМ РЕЧЬ ПОЛЬЗОВАТЕЛЯ НЕМЕДЛЕННО
+        console.log('👤 Interim распознанный текст:', interimTranscript);
+
+        // ПРЕРЫВАНИЕ TTS: прерываем при ЛЮБОЙ речи пользователя, даже с низкой уверенностью
+        if (isPlayingAudioRef.current && interimTranscript.length > 0) {
+          console.log('🛑 Пользователь прерывает TTS речью (даже с низкой уверенностью):', interimTranscript, `(уверенность: ${result[0].confidence})`);
+
+          // Проверяем, является ли это командой прерывания
+          const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
+          const isInterruptCommand = interruptCommands.some(cmd =>
+            interimTranscript.toLowerCase().includes(cmd)
+          );
+
+          if (isInterruptCommand) {
+            console.log('🚨 Команда прерывания обнаружена:', interimTranscript);
+          }
+
+          stopAssistantSpeech();
+
+          // Сохраняем текст для финальной обработки
+          cleanTranscriptRef.current = interimTranscript;
+
+          // Останавливаем распознавание речи временно
           if (speechRecognitionRef.current && isRecording) {
             try {
               speechRecognitionRef.current.stop();
@@ -590,96 +399,65 @@ const VoiceChat = () => {
               console.log('⚠️ Ошибка остановки распознавания:', e);
             }
           }
-            return; // Прерываем обработку после остановки TTS
-          }
-
-          // После завершения TTS - более строгая проверка для избежания ложных срабатываний
-          if (!isSpeaking && result[0].confidence > 0.95 && interimTranscript.length > 5) {
-            console.log('🛑 Обнаружена речь пользователя после завершения TTS, останавливаю TTS...');
-            console.log('📝 Interim transcript:', interimTranscript, 'Confidence:', result[0].confidence);
-            stopCurrentTTS();
-            // Очистить состояние TTS после прерывания
-            clearTTSState();
-            return;
-          }
-
-          // Проверяем на эхо TTS только если TTS не был прерван выше
-          if (isEchoOfTTS(interimTranscript, result[0].confidence)) {
-            console.log('🔇 Пропускаем эхо TTS (interim):', interimTranscript);
-            return; // Ignore echo
-          }
+          return; // Прерываем обработку
         }
+
+        // Сохраняем interim результат для финальной обработки
+        cleanTranscriptRef.current = interimTranscript;
       }
 
-      // Собираем чистый транскрипт для финального результата
+      // Обрабатываем финальные результаты
       if (result.isFinal) {
-        const finalTranscript = result[0].transcript.trim();
-        console.log('👤 Финальный распознанный текст:', finalTranscript);
+        const transcript = result[0].transcript.trim();
+        console.log('👤 Финальный распознанный текст:', transcript);
 
-        // Если есть чистый транскрипт, используем его вместо финального результата
-        const transcriptToProcess = cleanTranscriptRef.current || finalTranscript;
-        cleanTranscriptRef.current = ''; // Очищаем для следующего раза
+        // Проверяем, является ли это командой прерывания
+        const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
+        const isInterruptCommand = interruptCommands.some(cmd =>
+          transcript.toLowerCase().includes(cmd)
+        );
 
-        console.log('🎯 Окончательный текст для обработки:', transcriptToProcess);
-
-
-        if (transcriptToProcess) {
-          // ПРОСТАЯ ПРОВЕРКА ЭХА TTS: проверяем точное соответствие
-          if (isEchoOfTTS(transcriptToProcess, result[0].confidence)) {
-            console.log('🔇 ЭХО TTS ОБНАРУЖЕНО (финальный результат), пропускаем:', transcriptToProcess);
-          return;
-        }
-
-          // Check for duplicate messages (avoid sending the same message twice)
-          const normalizedTranscript = transcriptToProcess.toLowerCase().trim();
-          const normalizedLastSent = lastSentMessageRef.current.toLowerCase().trim();
-
-          if (normalizedTranscript === normalizedLastSent) {
-            console.log('🔄 Дублирующее сообщение, пропускаем:', transcriptToProcess);
-            return;
-          }
-
-          // Additional check: if message is very short and similar to what we just sent
-          if (normalizedTranscript.length <= 15 && normalizedLastSent.includes(normalizedTranscript)) {
-            console.log('🔄 Похожее короткое сообщение после TTS, пропускаем:', transcriptToProcess);
-            return;
-          }
-
-          // Clear TTS state since user is actually speaking
-          clearTTSState();
-          
-          // Double-check TTS is stopped
+        if (transcript) {
+          // Stop any current TTS (на случай если не было прерывания через interim)
           if (isSpeaking) {
-            console.log('🎤 Пользователь прервал озвучку, останавливаю TTS...');
+            console.log('🎤 Останавливаю TTS...');
             stopCurrentTTS();
+          }
+
+          // Обработка команд прерывания
+          if (isInterruptCommand) {
+            console.log('🚨 Обнаружена команда прерывания в финальном результате:', transcript);
+            toast({
+              title: "Готово",
+              description: "Озвучка прервана",
+              variant: "default"
+            });
+            return; // Не отправляем на LLM
           }
 
           // Save current transcript for context
-          lastTranscriptRef.current = transcriptToProcess;
-          lastSentMessageRef.current = transcriptToProcess; // Track sent messages
+          lastTranscriptRef.current = transcript;
 
-          // Send to LLM and get response (include previous context if interrupted)
-          const llmResponse = await sendToLLM(transcriptToProcess);
+          // Send to LLM and get response
+          const llmResponse = await sendToLLM(transcript);
+
+          // Проверяем, не пустой ли ответ (означает прерывание)
+          if (!llmResponse) {
+            console.log('🛑 Ответ от LLM пустой - генерация была прервана');
+            return;
+          }
 
           // Small delay to ensure previous TTS is fully stopped
           await new Promise(resolve => setTimeout(resolve, 100));
 
-          // Speak the response (recognition continues automatically in continuous mode)
-          await speakText(llmResponse);
-
-          console.log('✅ Ответ озвучен, продолжаем прослушивание...');
-
-          // Ensure speech recognition continues after processing
-          if (speechRecognitionRef.current && isRecording && !isSpeaking) {
-            try {
-              console.log('🔄 Перезапуск распознавания после обработки ответа...');
-              speechRecognitionRef.current.start();
-            } catch (e: any) {
-              if (e.name !== 'InvalidStateError') {
-                console.error('❌ Ошибка перезапуска после ответа:', e);
-              }
-            }
+          // Speak the response (only if not empty)
+          if (llmResponse && llmResponse.trim()) {
+            await speakText(llmResponse);
+          } else {
+            console.warn('⚠️ Пропускаем озвучивание пустого ответа');
           }
+
+          console.log('✅ Ответ озвучен');
         }
       }
     };
@@ -773,8 +551,12 @@ const VoiceChat = () => {
           // Send to LLM
           try {
             const llmResponse = await sendToLLM(transcript);
-            await speakText(llmResponse);
-            console.log('✅ Ответ озвучен');
+            if (llmResponse && llmResponse.trim()) {
+              await speakText(llmResponse);
+              console.log('✅ Ответ озвучен');
+            } else {
+              console.warn('⚠️ Пропускаем озвучивание пустого ответа');
+            }
           } catch (error) {
             console.error('❌ Ошибка обработки ответа:', error);
           }
@@ -950,11 +732,57 @@ const VoiceChat = () => {
   }, [courseId]);
 
   // Send transcribed text to LLM with Julia's system prompt
-  const sendToLLM = useCallback(async (userMessage: string): Promise<string> => {
+  const sendToLLM = useCallback(async (userMessage: string, retryCount: number = 0): Promise<string> => {
+    const MAX_RETRIES = 3; // Увеличили количество попыток
+    const originalMessage = userMessage;
+
+    console.log('🚀 sendToLLM вызвана с сообщением:', `"${userMessage}"`, retryCount > 0 ? `(попытка ${retryCount + 1}/${MAX_RETRIES + 1})` : '');
+    console.log('📏 Длина сообщения:', userMessage.length);
+    console.log('🤖 Используется модель:', VOICE_CHAT_LLM_MODEL);
+
     setIsGeneratingResponse(true);
+
+    // Захватываем generationId перед асинхронными операциями
+    const startGenId = generationIdRef.current;
 
     try {
       console.log('🤖 Отправка сообщения в LLM...');
+
+      // Мониторинг запроса
+      monitorLLMRequest(userMessage, courseId || 'unknown');
+
+      // Проверка на подозрительное сообщение (для всех попыток, но с разными стратегиями)
+      if (isSuspiciousMessage(userMessage)) {
+        console.warn('⚠️ Обнаружено подозрительное сообщение:', userMessage);
+        const safeAlternative = generateSafeAlternative(userMessage);
+
+        // Для retry используем более агрессивную замену
+        if (retryCount > 0) {
+          // Более радикальная замена для повторных попыток
+          userMessage = safeAlternative.replace(/работ[а-я]*/gi, 'учимся')
+                                     .replace(/давай/gi, 'скажи')
+                                     .replace(/продолж[а-я]*/gi, 'давай')
+                                     .replace(/начн[а-я]*/gi, 'скажи');
+          console.log('🔄 Радикальная замена для retry:', userMessage);
+        } else if (safeAlternative !== userMessage) {
+          console.log('🔄 Замена на безопасную альтернативу:', safeAlternative);
+          userMessage = safeAlternative;
+        }
+      }
+
+      // Для retry попыток добавляем контекст
+      if (retryCount > 0) {
+        const prefixes = [
+          'Пожалуйста, объясни:',
+          'Расскажи мне про:',
+          'Помоги мне с:',
+          'Я хочу узнать:',
+          'Объясни, пожалуйста:'
+        ];
+        const prefix = prefixes[retryCount - 1] || 'Скажи мне:';
+        userMessage = `${prefix} ${userMessage}`;
+        console.log('📝 Добавлен префикс для retry:', userMessage);
+      }
 
       // Get user profile if not loaded
       let profile = userProfile;
@@ -1030,7 +858,8 @@ const VoiceChat = () => {
           // Сервер построит системный промт учителя Юлии сам.
           content: messageContent,
           messageType: 'voice',
-          interrupted: isSpeaking // Flag to indicate if this was an interruption
+          interrupted: isSpeaking, // Flag to indicate if this was an interruption
+          model: VOICE_CHAT_LLM_MODEL // Использовать модель GPT-5.1 для голосового чата
         })
       });
 
@@ -1045,7 +874,7 @@ const VoiceChat = () => {
           console.error('❌ Ошибка парсинга ответа:', parseError);
         }
         console.error('❌ Ответ сервера с ошибкой:', response.status, errorData);
-        throw new Error(errorData.error || errorData.details || 'Failed to get LLM response');
+        throw new Error(errorData.error || 'Failed to get LLM response');
       }
 
       // Parse response safely
@@ -1054,27 +883,101 @@ const VoiceChat = () => {
         const text = await response.text();
         console.log('📥 Сырой ответ сервера:', text.substring(0, 200));
         data = JSON.parse(text);
+
+        // Additional validation of server response
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid response format from server');
+        }
+
+        // Check if message is empty or invalid
+        if (data.message === null || data.message === undefined) {
+          console.warn('⚠️ Сервер вернул null/undefined сообщение');
+          return 'Извини, у меня возникли технические сложности. Попробуй задать вопрос еще раз.';
+        }
+
       } catch (parseError) {
         console.error('❌ Ошибка парсинга JSON:', parseError);
         throw new Error('Invalid JSON response from server');
       }
 
-      console.log('✅ LLM ответил:', data.message);
-
-      // Проверяем, что ответ не пустой
-      if (!data.message || data.message.trim() === '') {
-        console.warn('⚠️ Сервер вернул пустой ответ LLM:', {
-          messageId: data.messageId,
-          hasToken: !!token,
-          courseId: courseId,
-          messageContent: messageContent.substring(0, 100) + '...',
-          fullResponse: JSON.stringify(data)
-        });
-        // Возвращаем fallback, но логируем проблему
-        return 'Извини, у меня возникла проблема с генерацией ответа. Попробуй задать вопрос по-другому.';
+      // Проверяем, не было ли прерывания генерации
+      if (generationIdRef.current !== startGenId) {
+        console.log('🛑 Генерация ответа была прервана');
+        console.log('🎯 sendToLLM возвращает пустой результат из-за прерывания');
+        return '';
       }
 
-      return data.message;
+      console.log('✅ LLM ответил:', data.message);
+
+      const finalMessage = data.message || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+
+      // Мониторинг ответа
+      const wasSuccessful = finalMessage.trim().length >= 10 &&
+                           finalMessage !== 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
+
+      monitorLLMResponse(
+        userMessage,
+        courseId || 'unknown',
+        finalMessage,
+        data.messageId || 'unknown',
+        Date.now() - startGenId,
+        wasSuccessful ? undefined : 'empty_response'
+      );
+
+      // Автообучение: запоминаем проблемные фразы
+      updateLearnedAlternatives(userMessage, wasSuccessful);
+
+      // Дополнительная проверка на пустой или слишком короткий ответ
+      if (!finalMessage.trim() || finalMessage.trim().length < 10) { // Увеличили минимальную длину
+        console.warn('⚠️ Получен подозрительно короткий ответ от LLM:', `"${finalMessage}"`, `(длина: ${finalMessage.length})`);
+
+        // Проверяем, можем ли повторить запрос
+        if (retryCount < MAX_RETRIES) {
+          console.log(`🔄 Повторяем запрос (попытка ${retryCount + 1}/${MAX_RETRIES + 1})`);
+
+          // Более длинная пауза для retry (избегаем rate limiting)
+          const delay = Math.min(2000 * Math.pow(2, retryCount), 10000); // Экспоненциальная задержка
+          await new Promise(resolve => setTimeout(resolve, delay));
+
+          // Разные стратегии retry в зависимости от типа сообщения
+          let retryMessage: string;
+
+          if (retryCount === 0) {
+            // Первая retry: добавляем вежливость и контекст
+            retryMessage = `Будь добр, ${originalMessage.toLowerCase()}`;
+          } else if (retryCount === 1) {
+            // Вторая retry: упрощаем или используем безопасную альтернативу
+            if (originalMessage.length > 30) {
+              retryMessage = originalMessage.substring(0, 25) + '...';
+            } else {
+              retryMessage = generateSafeAlternative(originalMessage);
+            }
+          } else {
+            // Третья retry: супер-безопасная фраза
+            retryMessage = generateSuperSafePhrase(originalMessage);
+          }
+
+          console.log(`🎯 Новая попытка (${retryCount + 1}/${MAX_RETRIES + 1}) с: "${retryMessage}"`);
+          return sendToLLM(retryMessage, retryCount + 1);
+        }
+
+        // Все попытки исчерпаны - возвращаем полезный fallback
+        console.error('❌ Все retry попытки исчерпаны, возвращаем fallback');
+
+        // Умный fallback в зависимости от типа сообщения
+        if (isSuspiciousMessage(originalMessage)) {
+          return 'Давай лучше займемся уроком русского языка! 📚 Что тебя интересует в русском языке?';
+        } else if (originalMessage.toLowerCase().includes('математик') || originalMessage.toLowerCase().includes('алгебр') || originalMessage.toLowerCase().includes('геометр')) {
+          return 'Давай вернемся к русскому языку - это наш основной предмет! 📖 Что тебя интересует в русском языке?';
+        } else {
+          return 'Извини, сейчас у меня небольшие технические сложности. Давай попробуем поговорить о русском языке! 📚 Что ты хочешь изучить?';
+        }
+      }
+
+      console.log('🎯 sendToLLM возвращает результат:', `"${finalMessage}"`);
+      console.log('📏 Длина ответа:', finalMessage.length);
+
+      return finalMessage;
 
     } catch (error) {
       console.error('❌ Ошибка LLM:', error);
@@ -1083,69 +986,68 @@ const VoiceChat = () => {
         stack: error.stack,
         name: error.name
       });
+      console.log('🎯 sendToLLM возвращает ошибочный результат');
       return 'Извини, у меня технические неполадки. Попробуй еще раз через минуту.';
     } finally {
       setIsGeneratingResponse(false);
     }
   }, [token, userProfile, courseId, getUserProfile]);
 
-  // Синхронная очистка состояния TTS для всех детекторов
+
+
+
+
+// Очистка состояния TTS
   const clearTTSState = useCallback(() => {
     currentTTSTextRef.current = '';
-    ttsFingerprintRef.current = null;
-    textCorrelationDetector.clearTTSText();
     setIsSpeaking(false);
-    lastTTSEndTimeRef.current = Date.now(); // Запоминаем время окончания TTS
-  }, [textCorrelationDetector]);
+  }, []);
 
   // Convert text to speech using OpenAI TTS
   const speakText = useCallback(async (text: string) => {
+    // Check for empty or invalid text
+    if (!text || !text.trim()) {
+      console.warn('⚠️ Попытка озвучить пустой текст, пропускаем');
+      return;
+    }
+
     // Don't speak if sound is disabled
     if (!isSoundEnabled) {
       console.log('🔇 Звук отключен, пропускаем озвучку');
       return;
     }
 
-    // Store the TTS text for all echo detectors
+    // Устанавливаем состояние воспроизведения
+    isPlayingAudioRef.current = true;
+    // Store the TTS text for echo detection
     currentTTSTextRef.current = text;
-    textCorrelationDetector.setTTSText(text);
+
+    // Инициализируем прогресс озвучки для фильтрации эха
+    const normalizedText = text.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+    const words = normalizedText.split(/\s+/).filter(w => w.length > 0);
+    const estimatedDuration = words.length * 150; // ~150мс на слово
+
+    ttsProgressRef.current = {
+      startTime: Date.now(),
+      text: normalizedText,
+      duration: estimatedDuration,
+      words: words,
+      currentWordIndex: 0
+    };
 
     setIsSpeaking(true);
 
-    // Активировать распознавание речи для прерывания TTS (если микрофон включен)
-    // Пропускаем если уже записываем или используем fallback режим
-    if (isMicEnabled && !isRecording && !useFallbackTranscription && isWebSpeechAvailable()) {
-      console.log('🎤 Включаю распознавание речи для прерывания TTS');
-      try {
-        if (!speechRecognitionRef.current) {
-          const recognition = initializeSpeechRecognition();
-          if (recognition) {
-            speechRecognitionRef.current = recognition;
-          }
-        }
-        if (speechRecognitionRef.current) {
-          // Задержка перед запуском распознавания для предотвращения эха TTS
-          setTimeout(() => {
-            // Безопасно пытаемся запустить, игнорируя ошибку если уже запущено
-            try {
-              speechRecognitionRef.current?.start();
-              setIsRecording(true);
-              console.log('✅ Распознавание речи запущено для TTS прерывания');
-            } catch (startError: any) {
-              if (startError.name === 'InvalidStateError') {
-                console.log('ℹ️ Распознавание речи уже запущено');
-              } else {
-                console.log('❌ Ошибка запуска распознавания:', startError);
-              }
-            }
-          }, ECHO_DETECTION_CONFIG.SPEECH_RECOGNITION_DELAY); // Задержка из конфига
-        }
-      } catch (error) {
-        console.error('❌ Не удалось запустить распознавание речи:', error);
-      }
-    }
+
+    // Захватываем generationId для проверки прерывания
+    const myGenId = generationIdRef.current;
 
     try {
+      // Проверяем, не было ли прерывания перед синтезом
+      if (generationIdRef.current !== myGenId) {
+        console.log('🛑 Синтез речи был отменен');
+        return;
+      }
+
       console.log('🔊 Отправка текста в OpenAI TTS...');
 
       const response = await fetch('https://teacher.windexs.ru/api/tts', {
@@ -1162,26 +1064,19 @@ const VoiceChat = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || errorData.details || 'Failed to generate speech');
+        throw new Error(errorData.error || 'Failed to generate speech');
+      }
+
+      // Проверяем, не было ли прерывания после получения ответа
+      if (generationIdRef.current !== myGenId) {
+        console.log('🛑 Синтез речи был отменен после получения аудио');
+        return;
       }
 
       // Get audio blob
       const audioBlob = await response.blob();
       console.log('✅ Получен аудио файл, размер:', audioBlob.size);
 
-      // Compute spectral fingerprint for advanced echo detection
-      try {
-        const audioBuffer = await blobToAudioBuffer(audioBlob);
-        const fingerprint = computeTTSFingerprint(audioBuffer);
-        ttsFingerprintRef.current = fingerprint;
-        console.log('🎯 TTS spectral fingerprint computed and stored');
-      } catch (error) {
-        console.warn('⚠️ Failed to compute TTS fingerprint:', error);
-        ttsFingerprintRef.current = null;
-      }
-
-      // Capture TTS frequency profile for echo detection
-      ttsEchoDetector.captureTTSProfile(audioBlob);
 
       // ОБЯЗАТЕЛЬНО остановить предыдущее аудио перед запуском нового
       // Это предотвращает наложение нескольких TTS потоков
@@ -1200,44 +1095,26 @@ const VoiceChat = () => {
       // Event handlers
       audio.onplay = () => {
         console.log('🔊 Озвучка начата');
-        // Start monitoring for user speech to interrupt TTS
-        initializeAudioMonitoring().then(() => {
-          startAudioMonitoring();
-        });
       };
 
       audio.onended = () => {
         console.log('✅ Озвучка завершена');
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
+        isPlayingAudioRef.current = false;
         setIsSpeaking(false);
-        // Stop audio monitoring
-        stopAudioMonitoring();
-        // Запоминаем время окончания TTS для обнаружения эха
-        lastTTSEndTimeRef.current = Date.now();
-
-        // НЕ очищаем TTS текст сразу - оставляем для пост-TTS обнаружения эха
-        // clearTTSState() будет вызван через таймаут
-
-        // Очищаем состояние TTS через 12 секунд для пост-TTS обнаружения эха
-        setTimeout(() => {
-          if (!isSpeaking) { // Проверяем, что TTS не начался снова
-            clearTTSState();
-          }
-        }, 12000);
-
-        // НЕ останавливаем распознавание речи - продолжаем прослушивание для следующего вопроса
-        // Добавляем небольшую задержку чтобы избежать захвата остатков TTS аудио
-        setTimeout(() => {
-        console.log('🎤 Продолжаем прослушивание для следующего вопроса пользователя');
-        }, 500);
+        // Сбрасываем прогресс озвучки
+        ttsProgressRef.current = null;
       };
 
       audio.onerror = (event) => {
         console.error('❌ Ошибка воспроизведения аудио:', event);
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
+        isPlayingAudioRef.current = false; // Сбрасываем флаг воспроизведения
         setIsSpeaking(false);
+        // Сбрасываем прогресс озвучки
+        ttsProgressRef.current = null;
 
         // Остановить распознавание речи в случае ошибки
         if (speechRecognitionRef.current && isRecording) {
@@ -1283,20 +1160,6 @@ const VoiceChat = () => {
     }
   }, [token, toast, isSoundEnabled, stopCurrentTTS]);
 
-  // Initialize echo detection system
-  useEffect(() => {
-    const initEchoDetection = async () => {
-      await ttsEchoDetector.initialize();
-      console.log('🎯 Echo detection system initialized');
-    };
-
-    initEchoDetection();
-
-    // Cleanup on unmount
-    return () => {
-      ttsEchoDetector.cleanup?.();
-    };
-  }, []);
 
   // Load user profile on component mount
   useEffect(() => {
@@ -1329,29 +1192,33 @@ const VoiceChat = () => {
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
       }
-      // Stop current TTS
-      stopCurrentTTS();
+      // Stop current TTS and monitoring
+      stopAssistantSpeech();
       // Stop speech synthesis (fallback)
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
+      // Close audio context
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close();
+      }
     };
-  }, [stopCurrentTTS]);
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
       <Navigation />
 
-
       <main className="container mx-auto px-4 pt-24 pb-16">
-        <div className="max-w-2xl mx-auto">
-          <div className="text-center mb-8 animate-fade-in">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center mb-8">
             <h1 className="text-3xl md:text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              Голосовое общение
+              🎤 Голосовое общение
             </h1>
-            <p className="text-muted-foreground">
+            <p className="text-muted-foreground text-lg">
               {getCourseDisplayName(courseId || "")}
             </p>
+
           </div>
 
           <Card className="shadow-2xl animate-fade-in">
