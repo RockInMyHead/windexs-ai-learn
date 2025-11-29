@@ -44,29 +44,121 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // Proxy configuration (enabled by default)
 const PROXY_ENABLED = process.env.PROXY_ENABLED !== 'false';
-const PROXY_HOST = process.env.PROXY_HOST || '185.68.187.20';
+const PROXY_HOST = process.env.PROXY_HOST || '185.68.186.158';
 const PROXY_PORT = process.env.PROXY_PORT || '8000';
-const PROXY_USERNAME = process.env.PROXY_USERNAME || 'rBD9e6';
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || 'jZdUnJ';
+const PROXY_USERNAME = process.env.PROXY_USERNAME || '7BwWCS';
+const PROXY_PASSWORD = process.env.PROXY_PASSWORD || 'BBBvb6';
+
+// Helper function for OpenAI API error handling
+async function safeOpenAICall(operation, fallbackMessage = null, isStreaming = false) {
+  try {
+    return await operation();
+  } catch (error) {
+    console.error('❌ OpenAI API Error:', {
+      message: error.message,
+      code: error.code,
+      type: error.type,
+      status: error.status
+    });
+
+    // Handle specific proxy/geo-blocking errors
+    if (error.code === 'unsupported_country_region_territory' ||
+        error.type === 'request_forbidden' ||
+        error.message?.includes('Country, region, or territory not supported')) {
+      console.log('🌍 Geo-blocking detected, attempting proxy bypass...');
+
+      // Try to reinitialize without proxy
+      if (PROXY_ENABLED) {
+        console.log('🔄 Switching to direct OpenAI connection...');
+
+        let directClient;
+        if (isStreaming) {
+          // For streaming, we need to create a new client instance
+          directClient = new OpenAI({
+            apiKey: OPENAI_API_KEY,
+            maxRetries: 3,
+            timeout: 60000
+          });
+        } else {
+          directClient = new OpenAI({
+            apiKey: OPENAI_API_KEY,
+            maxRetries: 3,
+            timeout: 60000
+          });
+        }
+
+        try {
+          // Retry the operation without proxy using direct client
+          return await operation(directClient);
+        } catch (directError) {
+          console.error('❌ Direct connection also failed:', directError.message);
+          throw directError;
+        }
+      }
+    }
+
+    // For streaming, we can't provide a simple fallback
+    if (isStreaming) {
+      throw error;
+    }
+
+    // If fallback message provided, return it
+    if (fallbackMessage) {
+      console.log('💬 Returning fallback message:', fallbackMessage);
+      return {
+        choices: [{
+          message: { content: fallbackMessage },
+          finish_reason: 'fallback'
+        }]
+      };
+    }
+
+    throw error;
+  }
+}
 
 // Initialize OpenAI client
 let openai = null;
 if (OPENAI_API_KEY) {
+  console.log('🔧 Настройка OpenAI клиента...');
+  console.log('📊 PROXY_ENABLED:', PROXY_ENABLED);
+  console.log('🌐 PROXY_HOST:', PROXY_HOST);
+  console.log('🔌 PROXY_PORT:', PROXY_PORT);
+
   if (PROXY_ENABLED) {
-    const proxyUrl = `http://${PROXY_USERNAME}:${PROXY_PASSWORD}@${PROXY_HOST}:${PROXY_PORT}`;
-    const proxyAgent = new HttpsProxyAgent(proxyUrl);
+    try {
+      const proxyUrl = `http://${PROXY_USERNAME}:${PROXY_PASSWORD}@${PROXY_HOST}:${PROXY_PORT}`;
+      console.log('🔗 Прокси URL:', proxyUrl.replace(/:([^:@]{4})[^:@]*@/, ':****@')); // Hide password in logs
 
-    openai = new OpenAI({
-      apiKey: OPENAI_API_KEY,
-      httpAgent: proxyAgent
-    });
+      const proxyAgent = new HttpsProxyAgent(proxyUrl);
 
-    console.log('🤖 OpenAI клиент инициализирован с прокси:', `${PROXY_HOST}:${PROXY_PORT}`);
+      openai = new OpenAI({
+        apiKey: OPENAI_API_KEY,
+        httpAgent: proxyAgent,
+        maxRetries: 3,
+        timeout: 60000 // 60 seconds timeout
+      });
+
+      console.log('✅ OpenAI клиент инициализирован с прокси:', `${PROXY_HOST}:${PROXY_PORT}`);
+    } catch (proxyError) {
+      console.error('❌ Ошибка настройки прокси:', proxyError.message);
+      console.log('⚠️ Переключение на прямое подключение к OpenAI...');
+
+      openai = new OpenAI({
+        apiKey: OPENAI_API_KEY,
+        maxRetries: 3,
+        timeout: 60000
+      });
+
+      console.log('✅ OpenAI клиент инициализирован без прокси (fallback)');
+    }
   } else {
     openai = new OpenAI({
-      apiKey: OPENAI_API_KEY
+      apiKey: OPENAI_API_KEY,
+      maxRetries: 3,
+      timeout: 60000
     });
-    console.log('🤖 OpenAI клиент инициализирован без прокси');
+    console.log('✅ OpenAI клиент инициализирован без прокси');
   }
 } else {
   console.log('⚠️ OpenAI API ключ не найден');
@@ -1053,13 +1145,16 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
       try {
         console.log('🎤 Voice chat запрос в OpenAI (без стриминга)...');
         console.log('📝 Сообщения для voice chat:', JSON.stringify(messages, null, 2));
-        const completion = await openai.chat.completions.create({
-          model: 'gpt-4o',
-          messages,
-          temperature,
-          max_completion_tokens: 200,
-          stream: false
-        });
+        const completion = await safeOpenAICall(
+          () => openai.chat.completions.create({
+            model: 'gpt-4o',
+            messages,
+            temperature,
+            max_completion_tokens: 200,
+            stream: false
+          }),
+          generateFallbackResponse(content, courseId)
+        );
 
         const fullResponse = completion.choices[0]?.message?.content || '';
         const tokensUsed = completion.usage?.total_tokens || 0;
@@ -1110,13 +1205,21 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     let tokensUsed = 0;
 
     try {
-      const stream = await openai.chat.completions.create({
-        model: 'gpt-5.1',
-        messages,
-        temperature,
-        max_completion_tokens: 2000,
-        stream: true
-      });
+      const stream = await safeOpenAICall(
+        () => openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages,
+          temperature,
+          max_completion_tokens: 2000,
+          stream: true
+        }),
+        null, // No fallback for streaming
+        true // Indicate this is streaming
+      );
+
+      if (!stream) {
+        throw new Error('Streaming not available, falling back to non-streaming');
+      }
       console.log('✅ OpenAI API ответил успешно');
 
       for await (const chunk of stream) {
@@ -1437,13 +1540,16 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
     }
 
     console.log('🚀 Отправка запроса в OpenAI API...');
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-5.1',
-      messages,
-      temperature: 0.7,
-      max_completion_tokens: 1000,
-      stream: false
-    });
+    const completion = await safeOpenAICall(
+      () => openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages,
+        temperature: 0.7,
+        max_completion_tokens: 1000,
+        stream: false
+      }),
+      'Привет! Я Юлия, твой AI-учитель. Я могу помочь тебе с изучением любых предметов: математика, программирование, языки, науки и многое другое. Что тебя интересует сегодня?'
+    );
 
     const fullResponse = completion.choices[0]?.message?.content || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
     const tokensUsed = completion.usage?.total_tokens || 0;
@@ -1610,7 +1716,8 @@ app.post('/api/tts/prepare', authenticateToken, async (req, res) => {
     console.log('📝 Оригинальный текст:', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
 
     // Use LLM to convert text to TTS-friendly format
-    const completion = await openai.chat.completions.create({
+    const completion = await safeOpenAICall(
+      () => openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
@@ -1677,7 +1784,9 @@ app.post('/api/tts/prepare', authenticateToken, async (req, res) => {
       ],
       max_tokens: 2000,
       temperature: 0.4  // Немного увеличено для лучшего понимания контекста и грамматики
-    });
+    }),
+    text // fallback to original text
+    );
 
     const preparedText = completion.choices[0]?.message?.content?.trim() || text;
     
