@@ -1863,6 +1863,17 @@ app.post('/api/transcribe', (req, res, next) => {
   }
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: 'configured',
+    openai: OPENAI_API_KEY ? 'configured' : 'not configured',
+    proxy: PROXY_ENABLED ? 'enabled' : 'disabled'
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Production URL: https://teacher.windexs.ru`);
