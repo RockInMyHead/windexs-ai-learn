@@ -1,0 +1,23 @@
+{
+  "name": "audio-stability-tests",
+  "version": "1.0.0",
+  "description": "Тесты стабильности аудио/видео функционала",
+  "main": "run-tests.js",
+  "scripts": {
+    "test": "node run-tests.js",
+    "test:unit": "node audio-stability-tests.js",
+    "test:integration": "node integration-tests.js",
+    "test:browser": "node browser-compatibility-tests.js"
+  },
+  "dependencies": {
+    "jest": "^29.7.0",
+    "jsdom": "^23.0.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.8",
+    "@types/node": "^20.9.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
