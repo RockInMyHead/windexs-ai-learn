@@ -6,6 +6,7 @@
 export { TTSEchoDetector } from './TTSEchoDetector';
 export { TextCorrelationDetector } from './TextCorrelationDetector';
 export { SimpleMLEchoDetector } from './SimpleMLEchoDetector';
+export { EchoDetectorV2, echoDetectorV2 } from './EchoDetectorV2';
 
 // Конфигурация
 export {

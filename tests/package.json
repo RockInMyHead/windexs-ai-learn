@@ -4,11 +4,17 @@
   "description": "Тесты стабильности аудио/видео функционала",
   "main": "run-tests.js",
   "scripts": {
-    "test": "node run-tests.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "test:unit": "node audio-stability-tests.js",
     "test:integration": "node integration-tests.js",
-    "test:phase1": "node phase1-integration-tests.js",
-    "test:browser": "node browser-compatibility-tests.js"
+    "test:phase1": "jest phase1-integration-tests.js",
+    "test:phase2": "jest phase2-integration-tests.js",
+    "test:browser": "jest --testNamePattern=\"Browser\" --verbose",
+    "test:performance": "jest --testNamePattern=\"Performance\" --verbose",
+    "test:monitoring": "jest --testNamePattern=\"Monitoring\" --verbose",
+    "test:legacy": "node run-tests.js"
   },
   "dependencies": {
     "jest": "^29.7.0",

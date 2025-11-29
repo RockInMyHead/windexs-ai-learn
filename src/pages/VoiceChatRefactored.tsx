@@ -27,6 +27,17 @@ import {
   ErrorCodes
 } from "@/utils/errorHandling";
 
+// Browser Compatibility
+import {
+  UniversalSpeechRecognition,
+  browserDetector,
+  webAudioPolyfill,
+  checkBrowserCompatibility
+} from "@/utils/browserCompatibility";
+
+// Echo Detection
+import { echoDetectorV2 } from "@/utils/echoDetection";
+
 // WebRTC Components
 import { useWebRTC } from "@/webrtc";
 import VideoCall from "@/webrtc/components/VideoCall";
@@ -115,6 +126,11 @@ const VoiceChatRefactored = () => {
     // Setup global error handling
     setupGlobalErrorHandling();
 
+    // Initialize echo detector
+    echoDetectorV2.initialize().catch(error => {
+      console.error('Failed to initialize echo detector:', error);
+    });
+
     // Initialize component
     initializeComponent();
   }, []);
@@ -140,14 +156,10 @@ const VoiceChatRefactored = () => {
     };
   }, []);
 
-  // Initialize speech recognition
+  // Initialize speech recognition with browser compatibility
   useEffect(() => {
-    if (context.useFallbackTranscription) {
-      initializeMediaRecording();
-    } else {
-      initializeSpeechRecognition();
-    }
-  }, [context.useFallbackTranscription]);
+    initializeUniversalSpeechRecognition();
+  }, []);
 
   // Component initialization
   const initializeComponent = async () => {
@@ -184,58 +196,66 @@ const VoiceChatRefactored = () => {
     }
   };
 
-  // Initialize speech recognition
-  const initializeSpeechRecognition = useCallback(() => {
-    const SpeechRecognition = window.SpeechRecognition ||
-      (window as any).webkitSpeechRecognition ||
-      (window as any).mozSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      console.log('⚠️ Web Speech API not supported, switching to fallback');
-      updateContext({ useFallbackTranscription: true });
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    speechRecognitionRef.current = recognition;
-
-    // Configure recognition
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'ru-RU';
-    recognition.maxAlternatives = 1;
-
-    // Event handlers
-    recognition.onstart = () => {
-      console.log('🎙️ Speech recognition started');
-      updateContext({ isRecording: true });
-    };
-
-    recognition.onresult = (event) => {
-      const result = event.results[event.results.length - 1];
-
-      if (result.isFinal) {
-        const transcript = result[0].transcript.trim();
-        console.log('👤 Final transcript:', transcript);
-
-        transcriptReceived(transcript);
-      } else {
-        const interimTranscript = result[0].transcript.trim();
-        updateContext({ transcript: interimTranscript });
+  // Initialize universal speech recognition
+  const initializeUniversalSpeechRecognition = useCallback(() => {
+    try {
+      // Check browser compatibility
+      const compatibility = checkBrowserCompatibility();
+      if (!compatibility.supported) {
+        console.warn('⚠️ Browser compatibility issues:', compatibility.issues);
+        compatibility.recommendations.forEach(rec => console.warn('💡', rec));
       }
-    };
 
-    recognition.onerror = (event) => {
-      console.error('🎙️ Speech recognition error:', event.error);
-      handleError(new Error(`Speech recognition error: ${event.error}`));
-    };
+      // Get browser-specific configuration
+      const browserConfig = browserDetector.getOptimizations();
 
-    recognition.onend = () => {
-      console.log('🎙️ Speech recognition ended');
-      updateContext({ isRecording: false });
-    };
+      // Create universal speech recognition
+      const recognition = new UniversalSpeechRecognition(
+        {
+          lang: 'ru-RU',
+          ...browserConfig.speechRecognition
+        },
+        {
+          onStart: () => {
+            console.log('🎙️ Universal speech recognition started');
+            updateContext({ isRecording: true });
+          },
+          onResult: (result) => {
+            if (result.isFinal) {
+              const transcript = result.transcript.trim();
+              console.log('👤 Final transcript:', transcript);
+              handleTranscriptReceived(transcript);
+            } else {
+              updateContext({ transcript: result.transcript });
+            }
+          },
+          onError: (error) => {
+            console.error('🎙️ Universal speech recognition error:', error);
+            handleError(error);
+          },
+          onEnd: () => {
+            console.log('🎙️ Universal speech recognition ended');
+            updateContext({ isRecording: false });
+          }
+        }
+      );
 
-    console.log('✅ Speech recognition initialized');
+      speechRecognitionRef.current = recognition as any;
+
+      // Check if fallback mode is used
+      if (recognition.isFallbackMode()) {
+        updateContext({ useFallbackTranscription: true });
+        console.log('⚠️ Using fallback speech recognition (Whisper API)');
+      } else {
+        updateContext({ useFallbackTranscription: false });
+        console.log('✅ Native speech recognition initialized');
+      }
+
+    } catch (error) {
+      console.error('❌ Failed to initialize universal speech recognition:', error);
+      updateContext({ useFallbackTranscription: true });
+      handleError(error as Error);
+    }
   }, [transcriptReceived, updateContext]);
 
   // Initialize media recording (fallback)
@@ -301,13 +321,13 @@ const VoiceChatRefactored = () => {
   };
 
   // Event handlers
-  const handleStartListening = useCallback(() => {
+  const handleStartListening = useCallback(async () => {
     if (!speechRecognitionRef.current) return;
 
     try {
-      speechRecognitionRef.current.start();
+      await speechRecognitionRef.current.start();
     } catch (error) {
-      console.error('Error starting speech recognition:', error);
+      console.error('Error starting universal speech recognition:', error);
       handleError(error as Error);
     }
   }, []);
@@ -317,10 +337,28 @@ const VoiceChatRefactored = () => {
     console.log('🎤 Speech detected');
   }, []);
 
-  const handleTranscriptReceived = useCallback(async (transcript: string) => {
+  const handleTranscriptReceived = useCallback(async (transcript: string, audioBlob?: Blob) => {
     if (!transcript.trim()) return;
 
     try {
+      // Check for echo using advanced detection
+      let audioBuffer: AudioBuffer | undefined;
+      if (audioBlob) {
+        audioBuffer = await blobToAudioBuffer(audioBlob);
+      }
+
+      const echoResult = await echoDetectorV2.detectEcho(transcript, audioBuffer);
+
+      if (echoResult.isEcho) {
+        console.log(`🔇 Echo detected (${(echoResult.confidence * 100).toFixed(1)}% confidence), ignoring: "${transcript}"`);
+        return;
+      }
+
+      console.log(`✅ Valid speech detected: "${transcript}"`);
+
+      // Clean up old echo profiles
+      echoDetectorV2.cleanupOldProfiles();
+
       // Send to LLM
       const llmResponse = await sendToLLM(transcript);
 
@@ -418,7 +456,7 @@ const VoiceChatRefactored = () => {
     });
   };
 
-  // TTS functionality with resilience
+  // TTS functionality with resilience and echo profiling
   const speakText = async (text: string): Promise<void> => {
     if (!text || !context.isSoundEnabled) return;
 
@@ -451,11 +489,17 @@ const VoiceChatRefactored = () => {
         return await response.blob();
       });
 
+      // Convert blob to AudioBuffer for echo profiling
+      const audioBuffer = await this.blobToAudioBuffer(audioBlob);
+
+      // Profile TTS audio for echo detection
+      await echoDetectorV2.profileTTSAudio(text, audioBuffer);
+
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       currentAudioRef.current = audio;
 
-      startSpeaking(text, text.length * 60); // Rough duration estimate
+      startSpeaking(text, audioBuffer.duration * 1000); // Actual duration
 
       return new Promise((resolve, reject) => {
         audio.onended = () => {
@@ -488,6 +532,25 @@ const VoiceChatRefactored = () => {
       console.error('TTS error:', error);
       handleError(error);
     }
+  };
+
+  // Helper method to convert Blob to AudioBuffer
+  const blobToAudioBuffer = async (blob: Blob): Promise<AudioBuffer> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const arrayBuffer = reader.result as ArrayBuffer;
+          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+          const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+          resolve(audioBuffer);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      reader.onerror = () => reject(new Error('Failed to read audio blob'));
+      reader.readAsArrayBuffer(blob);
+    });
   };
 
   // Error handler with user-friendly messages
@@ -604,6 +667,25 @@ const VoiceChatRefactored = () => {
                   </p>
                 </div>
               )}
+
+              {/* Browser Compatibility Info */}
+              <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-blue-800">
+                      🌐 Браузер: {browserDetector.getBrowserInfo().name} {browserDetector.getBrowserInfo().version}
+                    </p>
+                    <p className="text-xs text-blue-600">
+                      Режим распознавания: {context.useFallbackTranscription ? 'Whisper API' : 'Нативный'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs text-blue-600">
+                      Совместимость: {browserDetector.getPerformanceScore()}%
+                    </p>
+                  </div>
+                </div>
+              </div>
 
               {/* Transcript Display */}
               {context.transcript && (

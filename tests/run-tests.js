@@ -13,7 +13,8 @@ console.log('🎯 Запуск тестов стабильности аудио/
 const testFiles = [
   'audio-stability-tests.js',
   'integration-tests.js',
-  'phase1-integration-tests.js'
+  'phase1-integration-tests.js',
+  'phase2-integration-tests.js'
 ];
 
 let passedTests = 0;
