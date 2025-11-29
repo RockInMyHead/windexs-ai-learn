@@ -5,8 +5,8 @@ interface AssistantOrbProps {
 }
 
 const AssistantOrb: React.FC<AssistantOrbProps> = ({ state }) => {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
     const starsCanvasRef = useRef<HTMLCanvasElement>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
     const [dimensions, setDimensions] = useState({ width: 208, height: 208 });
 
     // Adjust size based on screen size
@@ -135,8 +135,6 @@ const AssistantOrb: React.FC<AssistantOrbProps> = ({ state }) => {
         }
 
         // Fill with gradient
-        ctx.fillStyle = 'rgba(72, 255, 167, 0.06)';
-        ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = baseGradient;
         ctx.fillRect(0, 0, width, height);
 
@@ -316,30 +314,6 @@ const AssistantOrb: React.FC<AssistantOrbProps> = ({ state }) => {
         ctx.fillRect(0, 0, width, height);
     }, [state]);
 
-    // Set up canvas for aurora effect
-    useEffect(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        let animationFrame: number;
-        let startTime = Date.now();
-
-        const animate = () => {
-            const time = (Date.now() - startTime) * 0.001;
-            drawAurora(ctx, canvas.width, canvas.height, time);
-            animationFrame = requestAnimationFrame(animate);
-        };
-
-        animate();
-
-        return () => {
-            cancelAnimationFrame(animationFrame);
-        };
-    }, [drawAurora]);
-
     // Set up canvas for stars
     useEffect(() => {
         const canvas = starsCanvasRef.current;
@@ -363,6 +337,23 @@ const AssistantOrb: React.FC<AssistantOrbProps> = ({ state }) => {
             cancelAnimationFrame(animationFrame);
         };
     }, [drawStars]);
+
+    // Управление видео в зависимости от состояния TTS
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        if (state === 'speaking') {
+            // Запускаем видео когда TTS начинает говорить
+            video.play().catch(error => {
+                console.warn('Ошибка воспроизведения видео:', error);
+            });
+        } else {
+            // Останавливаем видео когда TTS не говорит
+            video.pause();
+            video.currentTime = 0; // Сбрасываем на начало
+        }
+    }, [state]);
 
     return (
         <div
@@ -405,25 +396,15 @@ const AssistantOrb: React.FC<AssistantOrbProps> = ({ state }) => {
                 />
             </div>
 
-            {/* Aurora effect */}
-            <div className={`
-        absolute inset-0 rounded-full shadow-[0_0_60px_-8px_rgba(72,255,167,0.4)]
-        backdrop-blur-md overflow-hidden border
-        ring-1
-        ${state === 'vision_file' ? 'bg-gradient-to-b from-sky-300/50 via-sky-200/45 to-sky-100/50 border-sky-300/40 ring-sky-200/30' : ''}
-        ${state === 'vision_processing' ? 'bg-gradient-to-b from-teal-300/45 via-teal-200/40 to-teal-300/45 border-teal-400/30 ring-teal-400/20' : ''}
-        ${state === 'vision_asr' ? 'bg-gradient-to-b from-emerald-300/50 via-emerald-200/45 to-emerald-300/50 border-emerald-400/40 ring-emerald-400/30' : ''}
-        ${state === 'listening' ? 'bg-gradient-to-b from-emerald-300/50 via-emerald-200/45 to-emerald-300/50 border-emerald-400/40 ring-emerald-400/30' : ''}
-        ${state === 'greeting' ? 'bg-gradient-to-b from-blue-300/50 via-blue-200/45 to-blue-300/50 border-blue-400/40 ring-blue-400/30' : ''}
-        ${state === 'processing' ? 'bg-gradient-to-b from-purple-300/45 via-blue-300/40 to-purple-300/45 border-purple-400/30 ring-purple-400/20' : ''}
-        ${state === 'speaking' ? 'bg-gradient-to-b from-amber-300/45 via-yellow-300/40 to-amber-300/45 border-amber-400/30 ring-amber-400/20' : ''}
-        ${state === 'idle' ? 'bg-gradient-to-b from-emerald-300/45 via-sky-300/40 to-purple-300/45 border-emerald-400/30 ring-emerald-400/20' : ''}
-      `}>
-                <canvas
-                    ref={canvasRef}
-                    width={300}
-                    height={300}
-                    className="absolute inset-0 w-full h-full opacity-100 mix-blend-plus-lighter"
+            {/* Video with teacher */}
+            <div className="absolute inset-0 rounded-full overflow-hidden">
+                <video
+                    ref={videoRef}
+                    src="/teacher.mp4"
+                    loop
+                    muted
+                    playsInline
+                    className="absolute inset-0 w-full h-full object-cover rounded-full"
                 />
             </div>
         </div>

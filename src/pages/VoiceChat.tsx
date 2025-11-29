@@ -1,7 +1,7 @@
 import Navigation from "@/components/Navigation";
 import { useParams, useNavigate } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
-import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2, ArrowLeft } from "lucide-react";
+import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,17 +10,32 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase, updateLearnedAlternatives } from "@/utils/llmMonitoring";
 import AssistantOrb from "@/components/AssistantOrb";
-import BackgroundStars from "@/components/BackgroundStars";
+// import BackgroundStars from "@/components/BackgroundStars";
+
+// API URL from environment
+const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
 
 // Web Speech API types
 
-// Константы для обнаружения голоса и фильтрации эха
-const VOICE_DETECTION_THRESHOLD = 15; // Базовый порог громкости для обнаружения голоса
-const ECHO_SIMILARITY_THRESHOLD = 0.7; // Порог схожести для определения эха
-const ECHO_BUFFER_TIME = 500; // Время в мс после начала TTS, когда эхо наиболее вероятно
+// Константы для VAD (Voice Activity Detection)
+const VAD_THRESHOLD = 30; // Порог громкости для обнаружения голоса
 
 // Модель LLM для голосового чата
 const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
+
+// Функция определения Safari
+const isSafari = () => {
+  const ua = navigator.userAgent.toLowerCase();
+  const result = ua.includes('safari') && !ua.includes('chrome') && !ua.includes('chromium');
+  console.log('🌐 Определение браузера:', { 
+    userAgent: ua, 
+    isSafari: result,
+    hasChrome: ua.includes('chrome'),
+    hasSafari: ua.includes('safari')
+  });
+  return result;
+};
+
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
@@ -71,8 +86,6 @@ const VoiceChat = () => {
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
-  const cleanTranscriptRef = useRef<string>(''); // Track clean transcript without TTS echo
-  const currentTTSTextRef = useRef<string>(''); // Store current TTS text to detect echo
 
   // Механизм отслеживания генерации для отмены при прерывании
   const generationIdRef = useRef<number>(0);
@@ -177,7 +190,7 @@ const VoiceChat = () => {
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
 
-      const response = await fetch('https://teacher.windexs.ru/api/transcribe', {
+      const response = await fetch(`${API_URL}/transcribe`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -312,11 +325,12 @@ const VoiceChat = () => {
       setIsTranscribing(true);
     };
 
-    recognition.onspeechstart = () => {
-      console.log('🎤 Speech started - IMMEDIATELY stopping assistant speech');
-      // Прерываем TTS НЕМЕДЛЕННО при начале любой речи пользователя
-      stopAssistantSpeech();
-    };
+    // Disabled barge-in based on VAD/Speech start because of echo issues
+    // recognition.onspeechstart = () => {
+    //   console.log('🎤 Speech started');
+    //   // Мы больше не прерываем TTS здесь, так как это вызывает ложные срабатывания от эха
+    //   // stopAssistantSpeech();
+    // };
 
     // Добавляем дополнительную проверку на начало речи для фильтрации эха
     recognition.onaudiostart = () => {
@@ -342,51 +356,7 @@ const VoiceChat = () => {
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
         setTranscriptDisplay(interimTranscript);
-
-        // ДОПОЛНИТЕЛЬНОЕ ПРЕРЫВАНИЕ: прерываем TTS при начале любой речевой активности
-        if (isPlayingAudioRef.current) {
-          console.log('🚨 Речевая активность обнаружена - НЕМЕДЛЕННО прерываем TTS');
-          console.log('🛑 Прерывание TTS из-за речи пользователя');
-          stopAssistantSpeech();
-        }
-
-        // ПОКАЗЫВАЕМ РЕЧЬ ПОЛЬЗОВАТЕЛЯ НЕМЕДЛЕННО
         console.log('👤 Interim распознанный текст:', interimTranscript);
-
-        // ПРЕРЫВАНИЕ TTS: прерываем при ЛЮБОЙ речи пользователя, даже с низкой уверенностью
-        if (isPlayingAudioRef.current && interimTranscript.length > 0) {
-          console.log('🛑 Пользователь прерывает TTS речью (даже с низкой уверенностью):', interimTranscript, `(уверенность: ${result[0].confidence})`);
-
-          // Проверяем, является ли это командой прерывания
-          const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
-          const isInterruptCommand = interruptCommands.some(cmd =>
-            interimTranscript.toLowerCase().includes(cmd)
-          );
-
-          if (isInterruptCommand) {
-            console.log('🚨 Команда прерывания обнаружена:', interimTranscript);
-          }
-
-          stopAssistantSpeech();
-
-          // Сохраняем текст для финальной обработки
-          cleanTranscriptRef.current = interimTranscript;
-
-          // Останавливаем распознавание речи временно
-          if (speechRecognitionRef.current && isRecording) {
-            try {
-              speechRecognitionRef.current.stop();
-              setIsRecording(false);
-              console.log('🎤 Распознавание речи остановлено после прерывания TTS');
-            } catch (e) {
-              console.log('⚠️ Ошибка остановки распознавания:', e);
-            }
-          }
-          return; // Прерываем обработку
-        }
-
-        // Сохраняем interim результат для финальной обработки
-        cleanTranscriptRef.current = interimTranscript;
       }
 
       // Обрабатываем финальные результаты
@@ -395,28 +365,11 @@ const VoiceChat = () => {
         setTranscriptDisplay(transcript);
         console.log('👤 Финальный распознанный текст:', transcript);
 
-        // Проверяем, является ли это командой прерывания
-        const interruptCommands = ['подожди', 'стоп', 'прекрати', 'перестань', 'хватит', 'тихо', 'молчать', 'замолчи', 'stop', 'wait'];
-        const isInterruptCommand = interruptCommands.some(cmd =>
-          transcript.toLowerCase().includes(cmd)
-        );
-
         if (transcript) {
-          // Stop any current TTS (на случай если не было прерывания через interim)
+          // Stop any current TTS
           if (isSpeaking) {
             console.log('🎤 Останавливаю TTS...');
             stopCurrentTTS();
-          }
-
-          // Обработка команд прерывания
-          if (isInterruptCommand) {
-            console.log('🚨 Обнаружена команда прерывания в финальном результате:', transcript);
-            toast({
-              title: "Готово",
-              description: "Озвучка прервана",
-              variant: "default"
-            });
-            return; // Не отправляем на LLM
           }
 
           // Save current transcript for context
@@ -456,12 +409,12 @@ const VoiceChat = () => {
       setIsTranscribing(false);
 
       // In continuous mode, onend usually means an error occurred or intentional stop
-      // Only restart if we're still in recording state and not speaking (to avoid conflicts)
-      if (isRecording && !isSpeaking) {
+      // Restart if we're still in recording state (даже если TTS играет - для прерывания)
+      if (isRecording) {
         console.log('🔄 Перезапуск после неожиданной остановки...');
         setTimeout(() => {
           // Double-check we still want to be recording
-          if (speechRecognitionRef.current) {
+          if (speechRecognitionRef.current && isRecording) {
             try {
               speechRecognitionRef.current.start();
               console.log('✅ Перезапуск успешен');
@@ -694,7 +647,7 @@ const VoiceChat = () => {
   // Get user profile from API
   const getUserProfile = useCallback(async () => {
     try {
-      const response = await fetch('https://teacher.windexs.ru/api/profile', {
+      const response = await fetch(`${API_URL}/profile`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -813,14 +766,14 @@ const VoiceChat = () => {
       console.log('🔑 Token check:', { length: token.length, start: token.substring(0, 10) + '...' });
 
       // Determine endpoint and body based on courseId
-      let endpoint = 'https://teacher.windexs.ru/api/chat/general';
+      let endpoint = `${API_URL}/chat/general`;
       let body: any = {
         content: userMessage + contextString, // Server expects 'content'
-        messageType: 'text'
+        messageType: 'voice' // Mark as voice message so it won't appear in text chat
       };
 
       if (courseId && courseId !== 'general') {
-        endpoint = `https://teacher.windexs.ru/api/chat/${courseId}/message`;
+        endpoint = `${API_URL}/chat/${courseId}/message`;
       }
 
       let response;
@@ -965,9 +918,7 @@ const VoiceChat = () => {
 
     try {
       console.log('🔊 Генерация озвучки для:', text);
-      setIsSpeaking(true);
       isPlayingAudioRef.current = true;
-      currentTTSTextRef.current = text; // Сохраняем текст для фильтрации эха
 
       // Инициализируем прогресс озвучки
       ttsProgressRef.current = {
@@ -978,7 +929,7 @@ const VoiceChat = () => {
         currentWordIndex: 0
       };
 
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch(`${API_URL}/tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -987,7 +938,8 @@ const VoiceChat = () => {
         body: JSON.stringify({
           text,
           voice: 'nova', // Используем голос nova (как в описании)
-          model: 'tts-1-hd' // HD модель для лучшего качества
+          model: 'tts-1-hd', // HD модель для лучшего качества
+          speed: 0.95 // Скорость речи (0.25 - 4.0)
         })
       });
 
@@ -1009,6 +961,26 @@ const VoiceChat = () => {
       // Event handlers
       audio.onplay = () => {
         console.log('🔊 Озвучка начата');
+        // Устанавливаем isSpeaking = true только когда аудио реально начинает играть
+        setIsSpeaking(true);
+        console.log('🔘 isSpeaking установлен в true - видео должно запуститься');
+        
+        // Для браузеров кроме Safari - останавливаем распознавание когда начинается TTS
+        const shouldStop = !isSafari() && speechRecognitionRef.current;
+        console.log('🔍 Проверка остановки SR:', { 
+          isSafari: isSafari(), 
+          hasSpeechRecognition: !!speechRecognitionRef.current,
+          shouldStop 
+        });
+        
+        if (shouldStop) {
+          try {
+            console.log('⏸️ Останавливаем распознавание на время TTS (не Safari)');
+            speechRecognitionRef.current.stop();
+          } catch (e) {
+            console.warn('⚠️ Ошибка остановки распознавания:', e);
+          }
+        }
       };
 
       audio.onended = () => {
@@ -1017,28 +989,49 @@ const VoiceChat = () => {
         currentAudioRef.current = null;
         isPlayingAudioRef.current = false;
         setIsSpeaking(false);
+        
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
+        
+        // Для браузеров кроме Safari - перезапускаем распознавание после TTS
+        if (!isSafari() && speechRecognitionRef.current) {
+          setTimeout(() => {
+            try {
+              console.log('▶️ Перезапускаем распознавание после TTS (не Safari)');
+              speechRecognitionRef.current?.start();
+            } catch (e: any) {
+              if (e.name !== 'InvalidStateError') {
+                console.warn('⚠️ Ошибка перезапуска распознавания:', e);
+              }
+            }
+          }, 300); // Небольшая задержка для стабильности
+        }
       };
 
       audio.onerror = (event) => {
         console.error('❌ Ошибка воспроизведения аудио:', event);
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
-        isPlayingAudioRef.current = false; // Сбрасываем флаг воспроизведения
+        isPlayingAudioRef.current = false;
         setIsSpeaking(false);
+        
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
-
-        // Остановить распознавание речи в случае ошибки
-        if (speechRecognitionRef.current && isRecording) {
-          try {
-            speechRecognitionRef.current.stop();
-            setIsRecording(false);
-          } catch (e) {
-            console.log('⚠️ Ошибка остановки распознавания при ошибке TTS:', e);
-          }
+        
+        // Для браузеров кроме Safari - перезапускаем распознавание после ошибки
+        if (!isSafari() && speechRecognitionRef.current) {
+          setTimeout(() => {
+            try {
+              console.log('▶️ Перезапускаем распознавание после ошибки (не Safari)');
+              speechRecognitionRef.current?.start();
+            } catch (e: any) {
+              if (e.name !== 'InvalidStateError') {
+                console.warn('⚠️ Ошибка перезапуска:', e);
+              }
+            }
+          }, 300);
         }
+        
         toast({
           title: "Ошибка озвучки",
           description: "Не удалось воспроизвести аудио",
@@ -1106,72 +1099,104 @@ const VoiceChat = () => {
     if (isRecording) return 'Слушаю...';
     return 'Нажмите на микрофон, чтобы начать';
   }, [isSpeaking, isGeneratingResponse, isRecording]);
+  
+  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS
+  const showInterruptButton = isSpeaking && !isSafari();
+  
+  // Отладка кнопки прерывания
+  useEffect(() => {
+    console.log('🔘 Кнопка прерывания:', { 
+      showInterruptButton, 
+      isSpeaking, 
+      isSafari: isSafari() 
+    });
+  }, [showInterruptButton, isSpeaking]);
 
   return (
-    <div className="relative w-full h-screen bg-black overflow-hidden flex flex-col items-center justify-center font-sans">
-      {/* Background Stars */}
-      <BackgroundStars />
+    <div className="relative w-full h-screen bg-background overflow-hidden flex flex-col font-sans">
+      {/* Navigation */}
+      <Navigation />
 
-      {/* Navigation / Back Button */}
-      <div className="absolute top-6 left-6 z-50">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-white/70 hover:text-white hover:bg-white/10 rounded-full w-12 h-12"
-          onClick={() => navigate(-1)}
-        >
-          <ArrowLeft className="w-6 h-6" />
-        </Button>
+      {/* Course Title */}
+      <div className="absolute top-20 left-0 right-0 z-40 flex justify-center px-4">
+        <div className="bg-background/80 backdrop-blur-sm px-6 py-2 rounded-full border border-border/50 shadow-sm">
+          <span className="text-foreground/70 text-sm md:text-base font-medium">
+            {getCourseName()}
+          </span>
+        </div>
       </div>
 
       {/* Main Content */}
-      <div className="z-10 flex flex-col items-center justify-center space-y-12 w-full max-w-4xl px-4">
-
+      <div className="flex-1 flex flex-col items-center justify-center relative z-10 px-4 pt-16 pb-32 md:pb-24">
+        
         {/* Assistant Orb */}
-        <div className="relative flex items-center justify-center">
+        <div className="relative flex items-center justify-center mb-12 md:mb-16 scale-90 md:scale-100 transition-transform duration-500">
           <AssistantOrb state={orbState} />
         </div>
 
-        {/* Status & Transcript */}
-        <div className="flex flex-col items-center space-y-6 text-center max-w-2xl">
-          <div className="text-white/90 text-2xl font-light tracking-widest uppercase animate-pulse">
+        {/* Status */}
+        <div className="flex flex-col items-center space-y-6 text-center max-w-2xl px-4">
+          <div className="text-foreground/80 text-xl md:text-2xl font-light tracking-widest uppercase transition-colors duration-300">
             {statusText}
           </div>
-
-          {transcriptDisplay && (
-            <div className="text-white/70 text-lg font-light leading-relaxed backdrop-blur-sm bg-black/30 p-4 rounded-xl border border-white/10 transition-all duration-300">
-              "{transcriptDisplay}"
-            </div>
+          
+          {/* Interrupt Button - показывается во время TTS для браузеров кроме Safari */}
+          {showInterruptButton && (
+            <Button
+              variant="outline"
+              size="lg"
+              className="bg-green-500 hover:bg-green-600 text-white border-green-600 hover:border-green-700 shadow-lg animate-in fade-in-0 zoom-in-95 duration-300"
+              onClick={() => {
+                console.log('🛑 Пользователь нажал кнопку прерывания');
+                stopAssistantSpeech();
+                
+                // Перезапускаем распознавание
+                if (speechRecognitionRef.current) {
+                  setTimeout(() => {
+                    try {
+                      console.log('▶️ Перезапуск распознавания после прерывания кнопкой');
+                      speechRecognitionRef.current?.start();
+                    } catch (e: any) {
+                      if (e.name !== 'InvalidStateError') {
+                        console.warn('⚠️ Ошибка перезапуска:', e);
+                      }
+                    }
+                  }, 100);
+                }
+              }}
+            >
+              <span className="font-medium">Прервать</span>
+            </Button>
           )}
         </div>
       </div>
 
       {/* Controls */}
-      <div className="absolute bottom-12 z-50 flex items-center space-x-8">
+      <div className="absolute bottom-8 left-0 right-0 z-50 flex items-center justify-center space-x-6 md:space-x-12 px-4 pb-safe">
         {/* Sound Toggle */}
         <Button
           variant="ghost"
           size="icon"
-          className={`w-14 h-14 rounded-full transition-all duration-300 ${isSoundEnabled ? 'bg-white/10 text-white hover:bg-white/20' : 'bg-red-500/20 text-red-400 hover:bg-red-500/30'}`}
+          className={`w-12 h-12 md:w-14 md:h-14 rounded-full transition-all duration-300 border ${isSoundEnabled ? 'bg-background border-border text-foreground hover:bg-accent' : 'bg-destructive/10 border-destructive/20 text-destructive hover:bg-destructive/20'}`}
           onClick={handleToggleSound}
         >
-          {isSoundEnabled ? <Volume2 className="w-6 h-6" /> : <VolumeX className="w-6 h-6" />}
+          {isSoundEnabled ? <Volume2 className="w-5 h-5 md:w-6 md:h-6" /> : <VolumeX className="w-5 h-5 md:w-6 md:h-6" />}
         </Button>
 
         {/* Mic Toggle (Main Action) */}
         <Button
           variant="default"
           size="icon"
-          className={`w-20 h-20 rounded-full shadow-[0_0_40px_-10px_rgba(255,255,255,0.3)] transition-all duration-500 transform hover:scale-105 ${isRecording
-            ? 'bg-red-500 hover:bg-red-600 shadow-[0_0_50px_-10px_rgba(239,68,68,0.5)]'
-            : 'bg-white text-black hover:bg-gray-200'
+          className={`w-16 h-16 md:w-20 md:h-20 rounded-full shadow-lg transition-all duration-500 transform hover:scale-105 ${isRecording
+            ? 'bg-destructive hover:bg-destructive/90 shadow-destructive/20'
+            : 'bg-primary text-primary-foreground hover:bg-primary/90'
             }`}
           onClick={handleStartStopRecording}
         >
           {isRecording ? (
-            <MicOff className="w-8 h-8" />
+            <MicOff className="w-6 h-6 md:w-8 md:h-8" />
           ) : (
-            <Mic className="w-8 h-8" />
+            <Mic className="w-6 h-6 md:w-8 md:h-8" />
           )}
         </Button>
 
@@ -1179,10 +1204,10 @@ const VoiceChat = () => {
         <Button
           variant="ghost"
           size="icon"
-          className="w-14 h-14 rounded-full bg-red-500/20 text-red-400 hover:bg-red-500/30 hover:text-red-300 transition-all duration-300"
+          className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 hover:text-destructive transition-all duration-300"
           onClick={() => navigate(-1)}
         >
-          <PhoneOff className="w-6 h-6" />
+          <PhoneOff className="w-5 h-5 md:w-6 md:h-6" />
         </Button>
       </div>
     </div>

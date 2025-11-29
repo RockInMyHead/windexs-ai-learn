@@ -90,7 +90,7 @@ const Chat = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:4000/api/chat/general', {
+      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -140,7 +140,7 @@ const Chat = () => {
 
       console.log('🎤 Sending voice message to server...');
 
-      const response = await fetch('http://localhost:4000/api/chat/general', {
+      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
         method: 'POST',
         body: formData
       });
@@ -378,14 +378,35 @@ const Chat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('http://localhost:4000/api/tts', {
+      // First, prepare text for TTS (convert formulas, numbers, symbols)
+      console.log('📝 Подготовка текста для TTS...');
+      const prepareResponse = await fetch('https://teacher.windexs.ru/api/tts/prepare', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ text })
+      });
+
+      let textToSpeak = text;
+      if (prepareResponse.ok) {
+        const prepareData = await prepareResponse.json();
+        textToSpeak = prepareData.preparedText || text;
+        console.log('✅ Текст подготовлен для TTS');
+      } else {
+        console.warn('⚠️ Не удалось подготовить текст, используем оригинал');
+      }
+
+      // Then generate speech
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          text: text,
+          text: textToSpeak,
           voice: 'nova' // High-quality voice for chat
         })
       });

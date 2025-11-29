@@ -22,4 +22,17 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-# server/.env
+# Environment files
+.env
+.env.local
+.env.*.local
+server/.env
+*.env
+
+# Database
+*.sqlite
+*.sqlite3
+*.db
+
+# Video files (source)
+Untitled Video-3.mp4

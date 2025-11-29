@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2, MessageSquare, Bot } from "lucide-react";
+import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2, MessageSquare, Bot, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -36,6 +36,7 @@ const CourseChat = () => {
   const [currentAudio, setCurrentAudio] = useState<HTMLAudioElement | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -71,7 +72,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/history`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -79,32 +80,7 @@ const CourseChat = () => {
 
       if (response.ok) {
         const data = await response.json();
-
-        // Filter out voice-related messages from text chat (they belong to VoiceChat interface only)
-        let textMessages: any[] = [];
-        let skipNextAssistant = false;
-
-        // Process messages in chronological order (newest first)
-        for (let i = data.messages.length - 1; i >= 0; i--) {
-          const message = data.messages[i];
-
-          // Skip voice messages from users
-          if (message.content === '🎤 Голосовое сообщение' || message.message_type === 'voice') {
-            skipNextAssistant = true; // Next assistant message should also be skipped
-            continue;
-          }
-
-          // Skip assistant messages that follow voice messages
-          if (message.role === 'assistant' && skipNextAssistant) {
-            skipNextAssistant = false; // Reset flag after skipping one assistant message
-            continue;
-          }
-
-          // Include this message
-          textMessages.unshift(message);
-        }
-
-        setMessages(textMessages.map((m: any) => ({
+        setMessages(data.messages.map((m: any) => ({
           id: m.id,
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: m.content,
@@ -165,14 +141,14 @@ const CourseChat = () => {
         formData.append('messageType', 'voice');
         formData.append('token', token);
 
-        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal
         });
       } else {
         // Handle text message
-        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -329,7 +305,7 @@ const CourseChat = () => {
       formData.append('messageType', 'voice');
       formData.append('token', token || '');
 
-      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
         body: formData,
         signal: abortControllerRef.current.signal
@@ -503,14 +479,35 @@ const CourseChat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('http://localhost:4000/api/tts', {
+      // First, prepare text for TTS (convert formulas, numbers, symbols)
+      console.log('📝 Подготовка текста для TTS...');
+      const prepareResponse = await fetch('https://teacher.windexs.ru/api/tts/prepare', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ text })
+      });
+
+      let textToSpeak = text;
+      if (prepareResponse.ok) {
+        const prepareData = await prepareResponse.json();
+        textToSpeak = prepareData.preparedText || text;
+        console.log('✅ Текст подготовлен для TTS');
+      } else {
+        console.warn('⚠️ Не удалось подготовить текст, используем оригинал');
+      }
+
+      // Then generate speech
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          text: text,
+          text: textToSpeak,
           voice: 'nova' // High-quality educational voice
         })
       });
@@ -725,14 +722,16 @@ const CourseChat = () => {
               )}
 
               <div className="flex gap-2">
-                <Input
-                  placeholder={isRecording ? "Идет запись голоса..." : "Напишите ваш вопрос..."}
-                  className="flex-1"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                {/* Camera button */}
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => cameraInputRef.current?.click()}
                   disabled={isRecording || isSending}
-                />
+                >
+                  <Camera className="w-4 h-4" />
+                </Button>
 
                 {/* File upload button */}
                 <Button
@@ -744,6 +743,15 @@ const CourseChat = () => {
                 >
                   <Paperclip className="w-4 h-4" />
                 </Button>
+
+                <Input
+                  placeholder={isRecording ? "Идет запись голоса..." : "Напишите ваш вопрос..."}
+                  className="flex-1"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                  disabled={isRecording || isSending}
+                />
 
                 <Button
                   size="icon"
@@ -774,6 +782,15 @@ const CourseChat = () => {
                 type="file"
                 multiple
                 accept="image/*,.pdf,.doc,.docx,.txt"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              {/* Hidden camera input */}
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
                 className="hidden"
                 onChange={handleFileSelect}
               />
