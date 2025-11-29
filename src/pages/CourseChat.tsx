@@ -12,6 +12,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MathRenderer from "@/components/MathRenderer";
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
+
 interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -72,7 +74,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
+      const response = await fetch(`${API_URL}/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -141,14 +143,14 @@ const CourseChat = () => {
         formData.append('messageType', 'voice');
         formData.append('token', token);
 
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`${API_URL}/chat/${courseId}/message`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal
         });
       } else {
         // Handle text message
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`${API_URL}/chat/${courseId}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -305,7 +307,7 @@ const CourseChat = () => {
       formData.append('messageType', 'voice');
       formData.append('token', token || '');
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+      const response = await fetch(`${API_URL}/chat/${courseId}/message`, {
         method: 'POST',
         body: formData,
         signal: abortControllerRef.current.signal
@@ -481,7 +483,7 @@ const CourseChat = () => {
 
       // First, prepare text for TTS (convert formulas, numbers, symbols)
       console.log('📝 Подготовка текста для TTS...');
-      const prepareResponse = await fetch('https://teacher.windexs.ru/api/tts/prepare', {
+      const prepareResponse = await fetch(`${API_URL}/tts/prepare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -500,7 +502,7 @@ const CourseChat = () => {
       }
 
       // Then generate speech
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch(`${API_URL}/tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

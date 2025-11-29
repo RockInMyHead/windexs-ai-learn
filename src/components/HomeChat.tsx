@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import MathRenderer from "@/components/MathRenderer";
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
+
 interface Message {
   role: 'user' | 'ai';
   content: string;
@@ -48,7 +50,7 @@ const HomeChat = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('https://teacher.windexs.ru/api/chat/general', {
+      const response = await fetch(`${API_URL}/chat/general`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

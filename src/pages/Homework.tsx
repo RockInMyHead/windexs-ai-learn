@@ -8,6 +8,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
+
 interface HomeworkItem {
   id: string;
   course_id: string;
@@ -48,7 +50,7 @@ const Homework = () => {
     setIsLoading(true);
     try {
       // Load user courses
-      const coursesRes = await fetch('https://teacher.windexs.ru/api/courses', {
+      const coursesRes = await fetch(`${API_URL}/courses`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
@@ -60,7 +62,7 @@ const Homework = () => {
         const allHomework: HomeworkItem[] = [];
         for (const course of coursesData.courses || []) {
           const courseId = `${course.subject_id}-${course.grade ? 'grade-' + course.grade : 'goal-' + course.goal}`;
-          const hwRes = await fetch(`https://teacher.windexs.ru/api/homework/${courseId}`, {
+          const hwRes = await fetch(`${API_URL}/homework/${courseId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           });
           if (hwRes.ok) {
