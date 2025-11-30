@@ -419,6 +419,8 @@ const VoiceChat = () => {
         // Проверяем дублирование
         if (transcript === lastProcessedTranscriptRef.current) {
           console.log('⚠️ Дублирование транскрипции, пропускаем');
+          isProcessingLLMRef.current = false;
+          setIsTranscribing(false);
           return;
         }
         
@@ -640,6 +642,7 @@ const VoiceChat = () => {
   const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
     try {
       console.log('🎤 Отправка аудио на транскрибацию через OpenAI Whisper...');
+      console.log('📊 Размер аудио blob:', audioBlob.size, 'bytes, тип:', audioBlob.type);
       setIsTranscribing(true);
 
       const formData = new FormData();
@@ -655,6 +658,7 @@ const VoiceChat = () => {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('❌ Ответ сервера не OK:', response.status, response.statusText, errorData);
         throw new Error(errorData.error || 'Transcription failed');
       }
 
@@ -663,6 +667,12 @@ const VoiceChat = () => {
       return data.text || null;
     } catch (error) {
       console.error('❌ Ошибка транскрибации:', error);
+      console.error('❌ Детали ошибки:', {
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        apiUrl: API_URL,
+        hasToken: !!token
+      });
       toast({
         title: "Ошибка распознавания",
         description: "Не удалось распознать речь. Попробуйте еще раз.",
