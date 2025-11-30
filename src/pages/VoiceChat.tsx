@@ -81,8 +81,6 @@ const VoiceChat = () => {
   const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const [userProfile, setUserProfile] = useState<any>(null);
   const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
-  const [transcriptDisplay, setTranscriptDisplay] = useState<string>("");
-  const [assistantResponse, setAssistantResponse] = useState<string>("");
 
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -366,14 +364,12 @@ const VoiceChat = () => {
       // Обрабатываем interim результаты
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
-        setTranscriptDisplay(interimTranscript);
         console.log('👤 Interim распознанный текст:', interimTranscript);
       }
 
       // Обрабатываем финальные результаты
       if (result.isFinal) {
         const transcript = result[0].transcript.trim();
-        setTranscriptDisplay(transcript);
         console.log('👤 Финальный распознанный текст:', transcript);
 
         if (transcript) {
@@ -411,8 +407,6 @@ const VoiceChat = () => {
             return;
           }
 
-          // Сохраняем ответ для отображения
-          setAssistantResponse(llmResponse);
 
           // Small delay to ensure previous TTS is fully stopped
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -512,7 +506,6 @@ const VoiceChat = () => {
 
         if (transcript && transcript.trim()) {
           console.log('🎯 Fallback транскрипция:', transcript);
-          setTranscriptDisplay(transcript);
 
           // Проверяем, не обрабатывается ли уже запрос
           if (isProcessingLLMRef.current) {
@@ -529,8 +522,6 @@ const VoiceChat = () => {
           try {
             const llmResponse = await sendToLLM(transcript);
             if (llmResponse && llmResponse.trim()) {
-              // Сохраняем ответ для отображения
-              setAssistantResponse(llmResponse);
               await speakText(llmResponse);
               console.log('✅ Ответ озвучен');
             } else {
@@ -564,8 +555,6 @@ const VoiceChat = () => {
       }
 
       console.log('🎤 Запуск записи...');
-      setTranscriptDisplay("");
-      setAssistantResponse("");
 
       // Check if Web Speech API is available
       if (!isWebSpeechAvailable()) {
@@ -1207,20 +1196,6 @@ const VoiceChat = () => {
           <div className="text-foreground/80 text-xl md:text-2xl font-light tracking-widest uppercase transition-colors duration-300">
             {statusText}
           </div>
-          
-          {/* Transcript Display */}
-          {transcriptDisplay && (
-            <div className="bg-primary/5 border border-primary/20 rounded-lg px-6 py-3 max-w-xl animate-in fade-in-0 slide-in-from-bottom-4 duration-300">
-              <p className="text-primary font-medium">Вы: {transcriptDisplay}</p>
-            </div>
-          )}
-          
-          {/* Assistant Response Display */}
-          {assistantResponse && (
-            <div className="bg-accent/50 border border-accent rounded-lg px-6 py-4 max-w-xl animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
-              <p className="text-foreground/90 text-base leading-relaxed">{assistantResponse}</p>
-            </div>
-          )}
           
           {/* Interrupt Button - показывается во время TTS для браузеров кроме Safari */}
           {showInterruptButton && (
