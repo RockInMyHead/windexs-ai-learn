@@ -1097,17 +1097,30 @@ const VoiceChat = () => {
 
     } catch (error) {
       console.error('❌ Ошибка TTS:', error);
+
+      // Проверяем, была ли озвучка прервана (generationId изменился)
+      const wasInterrupted = generationIdRef.current !== startGenId;
+      console.log('🔍 TTS error analysis:', {
+        wasInterrupted,
+        retryCount,
+        currentGenId: generationIdRef.current,
+        startGenId,
+        error: error.message
+      });
+
       setIsSpeaking(false);
       isPlayingAudioRef.current = false;
       ttsProgressRef.current = null;
-      
-      // Показываем уведомление только если это не повторная попытка
-      if (retryCount === 0) {
+
+      // Показываем уведомление только если это не повторная попытка и не прерывание
+      if (retryCount === 0 && !wasInterrupted) {
         toast({
           title: "Озвучка временно недоступна",
           description: "Ассистент ответит текстом. Вы можете продолжать разговор.",
           variant: "default"
         });
+      } else if (wasInterrupted) {
+        console.log('✅ TTS прервана пользователем - ошибка игнорируется');
       }
     }
   }, [token, isSoundEnabled, toast, isRecording]);
