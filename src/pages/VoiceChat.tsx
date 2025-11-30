@@ -36,6 +36,28 @@ const isSafari = () => {
   return result;
 };
 
+// Функция определения устройства, требующего fallback (только Android)
+const needsFallbackTranscription = () => {
+  const ua = navigator.userAgent.toLowerCase();
+  // Используем fallback только для Android устройств (iOS работает хорошо с Web Speech API)
+  const needsFallback = /android|blackberry|windows phone|webos/i.test(ua);
+  console.log('📱 Определение устройства для fallback:', {
+    userAgent: ua,
+    needsFallback,
+    isIOS: /iphone|ipad|ipod/i.test(ua),
+    isAndroid: /android/i.test(ua),
+    isDesktop: !/iphone|ipad|ipod|android|blackberry|windows phone|webos/i.test(ua)
+  });
+  return needsFallback;
+};
+
+// Функция определения мобильного устройства (для UI адаптации)
+const isMobileDevice = () => {
+  const ua = navigator.userAgent.toLowerCase();
+  const isMobile = /iphone|ipad|ipod|android|blackberry|windows phone|webos/i.test(ua);
+  return isMobile;
+};
+
 // Функция проверки завершения урока
 const checkIfLessonFinished = (response: string): boolean => {
   const lowerResponse = response.toLowerCase();
@@ -331,6 +353,13 @@ const VoiceChat = () => {
 
   // Initialize Web Speech API
   const initializeSpeechRecognition = useCallback(() => {
+    // На устройствах, требующих fallback (Android), используем MediaRecorder + Whisper
+    if (needsFallbackTranscription()) {
+      console.log('📱 Устройство требует fallback, используем OpenAI Whisper для стабильности');
+      setUseFallbackTranscription(true);
+      return null;
+    }
+
     // Check if Web Speech API is supported (Chrome, Safari, Firefox, Edge)
     const SpeechRecognition = window.SpeechRecognition ||
       (window as any).webkitSpeechRecognition ||
@@ -345,7 +374,7 @@ const VoiceChat = () => {
     console.log('🎤 Инициализация Web Speech API...');
     const recognition = new SpeechRecognition();
 
-    // Configure recognition
+    // Configure recognition - для десктопа используем continuous mode
     recognition.continuous = true; // Keep listening continuously
     recognition.interimResults = true; // Enable interim results to detect speech early
     recognition.lang = 'ru-RU'; // Russian language
@@ -477,6 +506,24 @@ const VoiceChat = () => {
     recognition.onerror = (event) => {
       console.error('❌ Speech recognition error:', event.error);
       setIsTranscribing(false);
+      
+      // Игнорируем не критичные ошибки и перезапускаем
+      const nonCriticalErrors = ['no-speech', 'aborted', 'audio-capture'];
+      if (nonCriticalErrors.includes(event.error) && isRecording) {
+        console.log('ℹ️ Не критичная ошибка, перезапускаем распознавание...');
+        setTimeout(() => {
+          if (speechRecognitionRef.current && isRecording) {
+            try {
+              speechRecognitionRef.current.start();
+              console.log('✅ Перезапуск после ошибки:', event.error);
+            } catch (e: any) {
+              if (e.name !== 'InvalidStateError') {
+                console.warn('⚠️ Ошибка перезапуска:', e);
+              }
+            }
+          }
+        }, 500);
+      }
     };
 
     recognition.onend = () => {
@@ -1174,7 +1221,7 @@ const VoiceChat = () => {
         ttsProgressRef.current = null;
         
         // Для браузеров кроме Safari - перезапускаем распознавание после TTS
-        if (!isSafari() && speechRecognitionRef.current) {
+        if (!isSafari() && speechRecognitionRef.current && isRecording) {
           setTimeout(() => {
             try {
               console.log('▶️ Перезапускаем распознавание после TTS (не Safari)');
@@ -1184,7 +1231,7 @@ const VoiceChat = () => {
                 console.warn('⚠️ Ошибка перезапуска распознавания:', e);
               }
             }
-          }, 300); // Небольшая задержка для стабильности
+          }, 500); // Увеличили задержку с 300ms до 500ms
         }
       };
 
@@ -1199,17 +1246,17 @@ const VoiceChat = () => {
         ttsProgressRef.current = null;
 
         // Для браузеров кроме Safari - перезапускаем распознавание после ошибки
-        if (!isSafari() && speechRecognitionRef.current) {
+        if (!isSafari() && speechRecognitionRef.current && isRecording) {
           setTimeout(() => {
-          try {
+            try {
               console.log('▶️ Перезапускаем распознавание после ошибки (не Safari)');
               speechRecognitionRef.current?.start();
             } catch (e: any) {
               if (e.name !== 'InvalidStateError') {
                 console.warn('⚠️ Ошибка перезапуска:', e);
-          }
-        }
-          }, 300);
+              }
+            }
+          }, 500);
         }
         
         toast({
@@ -1305,12 +1352,22 @@ const VoiceChat = () => {
   const statusText = useMemo(() => {
     if (isSpeaking) return 'Говорю...';
     if (isGeneratingResponse) return 'Думаю...';
-    if (isRecording) return 'Слушаю...';
+    if (isRecording) {
+      // При использовании fallback режима показываем другой текст
+      if (useFallbackTranscription) {
+        return 'Запись... (нажмите снова, чтобы остановить)';
+      }
+      return 'Слушаю...';
+    }
+    // Разный текст для устройств с fallback и остальных
+    if (useFallbackTranscription) {
+      return 'Нажмите на микрофон и говорите';
+    }
     return 'Нажмите на микрофон, чтобы начать';
-  }, [isSpeaking, isGeneratingResponse, isRecording]);
+  }, [isSpeaking, isGeneratingResponse, isRecording, useFallbackTranscription]);
   
-  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS
-  const showInterruptButton = isSpeaking && !isSafari();
+  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
+  const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
   
   // Отладка кнопки прерывания
   useEffect(() => {
@@ -1359,8 +1416,8 @@ const VoiceChat = () => {
                 console.log('🛑 Пользователь нажал кнопку прерывания');
                 stopAssistantSpeech();
                 
-                // Перезапускаем распознавание
-                if (speechRecognitionRef.current) {
+                // Перезапускаем распознавание, если оно было активно
+                if (speechRecognitionRef.current && isRecording) {
                   setTimeout(() => {
                     try {
                       console.log('▶️ Перезапуск распознавания после прерывания кнопкой');
@@ -1370,7 +1427,7 @@ const VoiceChat = () => {
                         console.warn('⚠️ Ошибка перезапуска:', e);
                       }
                     }
-                  }, 100);
+                  }, 300);
                 }
               }}
             >
