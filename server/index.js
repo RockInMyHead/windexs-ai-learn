@@ -1576,9 +1576,9 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
       // Save AI response
       const aiMessageId = uuidv4();
       db.prepare(`
-        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
-        VALUES (?, ?, ?, 'assistant', ?, 'text')
-      `).run(aiMessageId, userId, 'general', fullResponse, tokensUsed);
+        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type, tokens_used)
+        VALUES (?, ?, ?, 'assistant', ?, ?, ?)
+      `).run(aiMessageId, userId, 'general', fullResponse, 'text', tokensUsed);
 
       console.log('✅ Сообщения сохранены в БД');
     } catch (dbError) {
