@@ -17,8 +17,19 @@ const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api'
 
 // Web Speech API types
 
-// Константы для VAD (Voice Activity Detection)
-const VAD_THRESHOLD = 30; // Порог громкости для обнаружения голоса
+// ========================================
+// КОНСТАНТЫ ДЛЯ АВТОМАТИЧЕСКОГО РАСПОЗНАВАНИЯ
+// ========================================
+
+// VAD (Voice Activity Detection) - автоматическое определение речи
+const VAD_SILENCE_DURATION = 1500; // мс тишины после речи для автоотправки
+const VAD_MIN_SPEECH_DURATION = 500; // минимальная длительность речи
+const VAD_ENERGY_THRESHOLD = 0.01; // порог энергии для определения речи
+const VAD_ANALYSIS_INTERVAL = 100; // интервал анализа аудио (мс)
+
+// Настройки буферизации для continuous recording
+const RECORDING_CHUNK_SIZE = 100; // размер chunk для MediaRecorder (мс)
+const MAX_RECORDING_DURATION = 30000; // максимальная длительность одной записи (мс)
 
 // Модель LLM для голосового чата
 const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
@@ -165,6 +176,50 @@ const VoiceChat = () => {
   // Флаг для предотвращения дублирования запросов к LLM
   const isProcessingLLMRef = useRef<boolean>(false);
 
+  // Forward refs для функций, используемых в VAD (избегаем проблем с порядком объявления)
+  const transcribeWithOpenAIRef = useRef<((blob: Blob) => Promise<string | null>) | null>(null);
+  const sendToLLMRef = useRef<((message: string) => Promise<string>) | null>(null);
+  const speakTextRef = useRef<((text: string) => Promise<void>) | null>(null);
+  const stopCurrentTTSRef = useRef<(() => void) | null>(null);
+  const navigateRef = useRef<any>(navigate);
+
+  // Update navigate ref when it changes
+  useEffect(() => {
+    navigateRef.current = navigate;
+  }, [navigate]);
+
+  // ========================================
+  // REFS ДЛЯ АВТОМАТИЧЕСКОГО CONTINUOUS RECORDING (Android)
+  // ========================================
+  
+  // VAD state management
+  const vadStateRef = useRef<{
+    isSpeaking: boolean;          // Идет ли речь сейчас
+    speechStartTime: number;      // Время начала речи
+    lastSoundTime: number;        // Время последнего звука
+    silenceStartTime: number;     // Время начала тишины
+    audioBuffer: Blob[];          // Буфер аудио chunks
+    isBlockedByTTS: boolean;      // Заблокирована ли отправка из-за TTS
+  }>({
+    isSpeaking: false,
+    speechStartTime: 0,
+    lastSoundTime: 0,
+    silenceStartTime: 0,
+    audioBuffer: [],
+    isBlockedByTTS: false
+  });
+
+  // Интервал для VAD анализа
+  const vadAnalysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // AudioContext для анализа громкости (используется для VAD)
+  const vadAudioContextRef = useRef<AudioContext | null>(null);
+  const vadAnalyserRef = useRef<AnalyserNode | null>(null);
+  const vadMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  
+  // Флаг continuous recording для Android
+  const isContinuousRecordingRef = useRef<boolean>(false);
+
 
   // Инициализация аудио контекста для анализа
   const initializeAudioContext = useCallback(async (): Promise<AudioContext> => {
@@ -181,6 +236,22 @@ const VoiceChat = () => {
     }
 
     return audioContextRef.current;
+  }, []);
+
+  /**
+   * Блокировка/разблокировка отправки во время TTS
+   * Эта функция должна быть объявлена рано, так как используется в других функциях
+   */
+  const setVADBlockedByTTS = useCallback((blocked: boolean) => {
+    console.log(blocked ? '🔇 VAD заблокирован - TTS воспроизводится' : '🔊 VAD разблокирован - TTS завершен');
+    vadStateRef.current.isBlockedByTTS = blocked;
+    
+    // Очищаем буфер при блокировке (чтобы не отправить эхо)
+    if (blocked) {
+      vadStateRef.current.audioBuffer = [];
+      vadStateRef.current.isSpeaking = false;
+      vadStateRef.current.silenceStartTime = 0;
+    }
   }, []);
 
   // Основная функция прерывания речи ассистента
@@ -221,11 +292,340 @@ const VoiceChat = () => {
 
     // Сбрасываем прогресс озвучки
     ttsProgressRef.current = null;
-  }, []);
+    
+    // Разблокируем VAD для Android continuous recording
+    setVADBlockedByTTS(false);
+  }, [setVADBlockedByTTS]);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
     stopAssistantSpeech();
+  }, []);
+
+  // ========================================
+  // АВТОМАТИЧЕСКОЕ CONTINUOUS RECORDING ДЛЯ ANDROID
+  // ========================================
+
+  /**
+   * Инициализация AudioContext для VAD анализа
+   * Создает анализатор громкости для определения речи
+   */
+  const initializeVADAudioContext = useCallback(async (stream: MediaStream): Promise<void> => {
+    try {
+      console.log('🎙️ Инициализация VAD AudioContext...');
+      
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      vadAudioContextRef.current = new AudioContextClass();
+      
+      if (vadAudioContextRef.current.state === 'suspended') {
+        await vadAudioContextRef.current.resume();
+      }
+      
+      // Создаем анализатор
+      vadAnalyserRef.current = vadAudioContextRef.current.createAnalyser();
+      vadAnalyserRef.current.fftSize = 2048;
+      vadAnalyserRef.current.smoothingTimeConstant = 0.8;
+      
+      // Подключаем микрофон к анализатору
+      vadMicSourceRef.current = vadAudioContextRef.current.createMediaStreamSource(stream);
+      vadMicSourceRef.current.connect(vadAnalyserRef.current);
+      
+      console.log('✅ VAD AudioContext инициализирован');
+    } catch (error) {
+      console.error('❌ Ошибка инициализации VAD AudioContext:', error);
+    }
+  }, []);
+
+  /**
+   * Анализ аудио для определения речи (VAD)
+   * Возвращает уровень энергии аудио сигнала
+   */
+  const analyzeAudioEnergy = useCallback((): number => {
+    if (!vadAnalyserRef.current) return 0;
+    
+    const bufferLength = vadAnalyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    vadAnalyserRef.current.getByteFrequencyData(dataArray);
+    
+    // Вычисляем RMS (Root Mean Square) для определения громкости
+    let sum = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      const normalized = dataArray[i] / 255.0;
+      sum += normalized * normalized;
+    }
+    
+    const rms = Math.sqrt(sum / bufferLength);
+    return rms;
+  }, []);
+
+  /**
+   * Обработка аудио буфера - отправка на транскрибацию
+   * Вызывается автоматически когда обнаружена пауза после речи
+   */
+  const processAudioBuffer = useCallback(async () => {
+    const { audioBuffer, speechStartTime, isBlockedByTTS } = vadStateRef.current;
+    
+    // Проверяем, есть ли что обрабатывать
+    if (audioBuffer.length === 0) {
+      console.log('⚠️ Аудио буфер пустой, пропускаем обработку');
+      return;
+    }
+    
+    // Проверяем минимальную длительность речи
+    const speechDuration = Date.now() - speechStartTime;
+    if (speechDuration < VAD_MIN_SPEECH_DURATION) {
+      console.log(`⚠️ Речь слишком короткая (${speechDuration}ms), пропускаем`);
+      vadStateRef.current.audioBuffer = [];
+      return;
+    }
+    
+    // Проверяем блокировку TTS
+    if (isBlockedByTTS) {
+      console.log('🔇 Отправка заблокирована - TTS воспроизводится, пропускаем');
+      vadStateRef.current.audioBuffer = [];
+      return;
+    }
+    
+    // Проверяем, не обрабатывается ли уже запрос
+    if (isProcessingLLMRef.current) {
+      console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем');
+      vadStateRef.current.audioBuffer = [];
+      return;
+    }
+    
+    // Проверяем наличие функций
+    if (!transcribeWithOpenAIRef.current || !sendToLLMRef.current || !speakTextRef.current) {
+      console.warn('⚠️ Функции еще не инициализированы, пропускаем');
+      return;
+    }
+    
+    console.log(`🎯 Обработка аудио буфера (${audioBuffer.length} chunks, ${speechDuration}ms)`);
+    
+    // Создаем blob из буфера
+    const audioBlob = new Blob(audioBuffer, { type: 'audio/webm' });
+    vadStateRef.current.audioBuffer = [];
+    
+    // Устанавливаем флаг обработки
+    isProcessingLLMRef.current = true;
+    setIsTranscribing(true);
+    
+    try {
+      // Транскрибируем через OpenAI Whisper
+      const transcript = await transcribeWithOpenAIRef.current(audioBlob);
+      
+      if (transcript && transcript.trim()) {
+        console.log('✅ Автоматическая транскрипция:', transcript);
+        
+        // Проверяем дублирование
+        if (transcript === lastProcessedTranscriptRef.current) {
+          console.log('⚠️ Дублирование транскрипции, пропускаем');
+          return;
+        }
+        
+        lastProcessedTranscriptRef.current = transcript;
+        
+        // Останавливаем текущий TTS если он играет
+        if (isSpeaking && stopCurrentTTSRef.current) {
+          console.log('🛑 Останавливаем TTS перед новым запросом');
+          stopCurrentTTSRef.current();
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Отправляем в LLM
+        const llmResponse = await sendToLLMRef.current(transcript);
+        
+        if (llmResponse && llmResponse.trim()) {
+          // Озвучиваем ответ
+          await speakTextRef.current(llmResponse);
+          
+          // Проверяем завершение урока
+          const isLessonFinished = checkIfLessonFinished(llmResponse);
+          if (isLessonFinished) {
+            console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
+            setTimeout(() => navigateRef.current('/courses'), 2000);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('❌ Ошибка обработки аудио буфера:', error);
+    } finally {
+      isProcessingLLMRef.current = false;
+      setIsTranscribing(false);
+    }
+  }, [isSpeaking]);
+
+  /**
+   * VAD цикл - непрерывный анализ аудио для автоматического определения речи
+   * Работает в фоне и автоматически отправляет речь на обработку
+   */
+  const vadAnalysisLoop = useCallback(() => {
+    if (!isContinuousRecordingRef.current) return;
+    
+    const energy = analyzeAudioEnergy();
+    const now = Date.now();
+    const { isSpeaking: wasSpeaking, lastSoundTime, silenceStartTime, speechStartTime } = vadStateRef.current;
+    
+    // Определяем, идет ли речь сейчас
+    const isSpeaking = energy > VAD_ENERGY_THRESHOLD;
+    
+    if (isSpeaking) {
+      // Обнаружена речь
+      vadStateRef.current.lastSoundTime = now;
+      
+      if (!wasSpeaking) {
+        // Начало новой речи
+        console.log('🎤 Обнаружено начало речи');
+        vadStateRef.current.isSpeaking = true;
+        vadStateRef.current.speechStartTime = now;
+        vadStateRef.current.silenceStartTime = 0;
+      }
+    } else {
+      // Тишина
+      if (wasSpeaking) {
+        // Только что закончилась речь
+        vadStateRef.current.isSpeaking = false;
+        vadStateRef.current.silenceStartTime = now;
+        console.log('🔇 Обнаружено окончание речи, ожидаем паузу...');
+      } else if (silenceStartTime > 0) {
+        // Продолжается тишина после речи
+        const silenceDuration = now - silenceStartTime;
+        
+        // Если тишина достаточно длинная - обрабатываем буфер
+        if (silenceDuration >= VAD_SILENCE_DURATION) {
+          console.log(`✅ Пауза ${silenceDuration}ms - обрабатываем речь`);
+          vadStateRef.current.silenceStartTime = 0;
+          
+          // Асинхронно обрабатываем буфер
+          processAudioBuffer().catch(error => {
+            console.error('❌ Ошибка в processAudioBuffer:', error);
+          });
+        }
+      }
+    }
+  }, [analyzeAudioEnergy, processAudioBuffer]);
+
+  /**
+   * Запуск continuous recording с автоматическим VAD
+   * Главная функция для Android устройств
+   */
+  const startContinuousRecording = useCallback(async (): Promise<boolean> => {
+    try {
+      console.log('🎙️ Запуск continuous recording с автоматическим VAD...');
+      
+      // Получаем доступ к микрофону
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('MediaDevices API недоступен');
+      }
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+      
+      mediaStreamRef.current = stream;
+      
+      // Инициализируем VAD AudioContext
+      await initializeVADAudioContext(stream);
+      
+      // Создаем MediaRecorder
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+      
+      // Сбрасываем состояние VAD
+      vadStateRef.current = {
+        isSpeaking: false,
+        speechStartTime: 0,
+        lastSoundTime: 0,
+        silenceStartTime: 0,
+        audioBuffer: [],
+        isBlockedByTTS: false
+      };
+      
+      // Обработчик получения аудио данных
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0 && isContinuousRecordingRef.current) {
+          vadStateRef.current.audioBuffer.push(event.data);
+          
+          // Ограничиваем размер буфера (защита от переполнения)
+          if (vadStateRef.current.audioBuffer.length > 300) { // ~30 секунд
+            console.log('⚠️ Буфер переполнен, очищаем старые chunks');
+            vadStateRef.current.audioBuffer = vadStateRef.current.audioBuffer.slice(-200);
+          }
+        }
+      };
+      
+      mediaRecorder.onerror = (event) => {
+        console.error('❌ MediaRecorder ошибка:', event);
+      };
+      
+      // Запускаем запись
+      mediaRecorder.start(RECORDING_CHUNK_SIZE);
+      isContinuousRecordingRef.current = true;
+      
+      // Запускаем VAD анализ
+      vadAnalysisIntervalRef.current = setInterval(vadAnalysisLoop, VAD_ANALYSIS_INTERVAL);
+      
+      console.log('✅ Continuous recording запущен с VAD');
+      return true;
+      
+    } catch (error) {
+      console.error('❌ Ошибка запуска continuous recording:', error);
+      toast({
+        title: "Ошибка микрофона",
+        description: "Не удалось получить доступ к микрофону",
+        variant: "destructive"
+      });
+      return false;
+    }
+  }, [initializeVADAudioContext, vadAnalysisLoop, toast]);
+
+  /**
+   * Остановка continuous recording
+   */
+  const stopContinuousRecording = useCallback(() => {
+    console.log('🛑 Остановка continuous recording...');
+    
+    // Останавливаем VAD анализ
+    if (vadAnalysisIntervalRef.current) {
+      clearInterval(vadAnalysisIntervalRef.current);
+      vadAnalysisIntervalRef.current = null;
+    }
+    
+    // Останавливаем запись
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {
+        console.warn('⚠️ Ошибка остановки MediaRecorder:', e);
+      }
+    }
+    
+    // Останавливаем микрофон
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => track.stop());
+      mediaStreamRef.current = null;
+    }
+    
+    // Очищаем VAD AudioContext
+    if (vadMicSourceRef.current) {
+      vadMicSourceRef.current.disconnect();
+      vadMicSourceRef.current = null;
+    }
+    
+    if (vadAudioContextRef.current) {
+      vadAudioContextRef.current.close();
+      vadAudioContextRef.current = null;
+    }
+    
+    // Сбрасываем флаги
+    isContinuousRecordingRef.current = false;
+    vadStateRef.current.audioBuffer = [];
+    
+    console.log('✅ Continuous recording остановлен');
   }, []);
 
   // Check if Web Speech API is available
@@ -591,12 +991,20 @@ const VoiceChat = () => {
   // Start/stop recording
   const handleStartStopRecording = useCallback(async () => {
     if (isRecording) {
-      // Stop recording
+      // ========================================
+      // ОСТАНОВКА ЗАПИСИ
+      // ========================================
       console.log('🛑 Остановка записи...');
       setIsRecording(false);
       setIsTranscribing(false);
 
-      // Check if using fallback (OpenAI Whisper) mode
+      // Для Android continuous recording - просто останавливаем
+      if (useFallbackTranscription && isContinuousRecordingRef.current) {
+        stopContinuousRecording();
+        return;
+      }
+
+      // Для старого fallback режима (ручной режим) - не используется больше
       if (useFallbackTranscription || !isWebSpeechAvailable()) {
         // Stop fallback recording and transcribe
         const transcript = await stopFallbackRecording();
@@ -641,7 +1049,7 @@ const VoiceChat = () => {
           }
         }
       } else {
-        // Web Speech API mode
+        // Web Speech API mode (iOS, Desktop)
         if (speechRecognitionRef.current) {
           try {
             speechRecognitionRef.current.stop();
@@ -651,6 +1059,10 @@ const VoiceChat = () => {
         }
       }
     } else {
+      // ========================================
+      // ЗАПУСК ЗАПИСИ
+      // ========================================
+      
       // Start recording (only if mic is enabled)
       if (!isMicEnabled) {
         toast({
@@ -663,7 +1075,20 @@ const VoiceChat = () => {
 
       console.log('🎤 Запуск записи...');
 
-      // Check if Web Speech API is available
+      // Для Android - запускаем continuous recording с автоматическим VAD
+      if (needsFallbackTranscription()) {
+        console.log('📱 Android устройство - используем continuous recording');
+        setUseFallbackTranscription(true);
+        
+        const started = await startContinuousRecording();
+        if (started) {
+          setIsRecording(true);
+          console.log('✅ Continuous recording запущен');
+        }
+        return;
+      }
+
+      // Check if Web Speech API is available (iOS, Desktop)
       if (!isWebSpeechAvailable()) {
         console.log('🔄 Используется fallback режим (OpenAI Whisper)');
         setUseFallbackTranscription(true);
@@ -713,7 +1138,21 @@ const VoiceChat = () => {
         }
       }
     }
-  }, [isRecording, isMicEnabled, toast]);
+  }, [
+    isRecording, 
+    isMicEnabled, 
+    useFallbackTranscription,
+    isWebSpeechAvailable,
+    startContinuousRecording,
+    stopContinuousRecording,
+    stopFallbackRecording,
+    startFallbackRecording,
+    initializeSpeechRecognition,
+    startSpeechRecognition,
+    stopCurrentTTS,
+    navigate,
+    toast
+  ]);
 
   // Toggle microphone
   const handleToggleMic = useCallback(() => {
@@ -1192,6 +1631,9 @@ const VoiceChat = () => {
         setIsSpeaking(true);
         console.log('🔘 isSpeaking установлен в true - видео должно запуститься');
         
+        // Блокируем VAD для Android continuous recording
+        setVADBlockedByTTS(true);
+        
         // Для браузеров кроме Safari - останавливаем распознавание когда начинается TTS
         const shouldStop = !isSafari() && speechRecognitionRef.current;
         console.log('🔍 Проверка остановки SR:', { 
@@ -1220,6 +1662,9 @@ const VoiceChat = () => {
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
         
+        // Разблокируем VAD для Android continuous recording
+        setVADBlockedByTTS(false);
+        
         // Для браузеров кроме Safari - перезапускаем распознавание после TTS
         if (!isSafari() && speechRecognitionRef.current && isRecording) {
           setTimeout(() => {
@@ -1244,6 +1689,9 @@ const VoiceChat = () => {
         
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
+
+        // Разблокируем VAD для Android continuous recording
+        setVADBlockedByTTS(false);
 
         // Для браузеров кроме Safari - перезапускаем распознавание после ошибки
         if (!isSafari() && speechRecognitionRef.current && isRecording) {
@@ -1316,28 +1764,56 @@ const VoiceChat = () => {
     getUserProfile();
   }, [getUserProfile]);
 
+  // Update function refs for VAD (чтобы избежать проблем с порядком объявления)
+  useEffect(() => {
+    transcribeWithOpenAIRef.current = transcribeWithOpenAI;
+    sendToLLMRef.current = sendToLLM;
+    speakTextRef.current = speakText;
+    stopCurrentTTSRef.current = stopCurrentTTS;
+  }, [transcribeWithOpenAI, sendToLLM, speakText, stopCurrentTTS]);
+
   // Clean up on unmount
   useEffect(() => {
     return () => {
+      console.log('🧹 Очистка ресурсов при размонтировании...');
+      
+      // Останавливаем continuous recording
+      if (isContinuousRecordingRef.current) {
+        stopContinuousRecording();
+      }
+      
+      // Останавливаем Speech Recognition
       if (speechRecognitionRef.current) {
         try {
           speechRecognitionRef.current.stop();
-        } catch (e) { }
+        } catch (e) { 
+          console.warn('⚠️ Ошибка остановки Speech Recognition:', e);
+        }
       }
+      
+      // Останавливаем аудио
       if (currentAudioRef.current) {
         currentAudioRef.current.pause();
         currentAudioRef.current = null;
       }
+      
+      // Останавливаем MediaRecorder
       if (mediaRecorderRef.current) {
         try {
           mediaRecorderRef.current.stop();
-        } catch (e) { }
+        } catch (e) { 
+          console.warn('⚠️ Ошибка остановки MediaRecorder:', e);
+        }
       }
+      
+      // Останавливаем микрофон
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
       }
+      
+      console.log('✅ Ресурсы очищены');
     };
-  }, []);
+  }, [stopContinuousRecording]);
 
   // Determine Orb state
   const orbState = useMemo(() => {
@@ -1353,18 +1829,22 @@ const VoiceChat = () => {
     if (isSpeaking) return 'Говорю...';
     if (isGeneratingResponse) return 'Думаю...';
     if (isRecording) {
-      // При использовании fallback режима показываем другой текст
+      // Для Android continuous recording - всегда "Слушаю..."
+      if (isContinuousRecordingRef.current) {
+        return isTranscribing ? 'Распознаю речь...' : 'Слушаю...';
+      }
+      // Для старого fallback режима (не используется)
       if (useFallbackTranscription) {
         return 'Запись... (нажмите снова, чтобы остановить)';
       }
       return 'Слушаю...';
     }
-    // Разный текст для устройств с fallback и остальных
+    // Для Android continuous recording - другой текст
     if (useFallbackTranscription) {
-      return 'Нажмите на микрофон и говорите';
+      return 'Нажмите на микрофон, чтобы начать';
     }
     return 'Нажмите на микрофон, чтобы начать';
-  }, [isSpeaking, isGeneratingResponse, isRecording, useFallbackTranscription]);
+  }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing, useFallbackTranscription]);
   
   // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
   const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
