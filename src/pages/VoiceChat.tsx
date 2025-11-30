@@ -424,6 +424,23 @@ const VoiceChat = () => {
           // Send to LLM and get response
           const llmResponse = await sendToLLM(transcript);
 
+          // Перезапускаем распознавание сразу после отправки в LLM
+          // (не ждем ответа, чтобы пользователь мог продолжать говорить)
+          if (speechRecognitionRef.current && isRecording && !isSafari()) {
+            setTimeout(() => {
+              try {
+                if (speechRecognitionRef.current && isRecording) {
+                  speechRecognitionRef.current.start();
+                  console.log('▶️ Перезапуск распознавания после отправки в LLM');
+                }
+              } catch (e: any) {
+                if (e.name !== 'InvalidStateError') {
+                  console.warn('⚠️ Ошибка перезапуска распознавания:', e);
+                }
+              }
+            }, 500);
+          }
+
           // Проверяем, не пустой ли ответ (означает прерывание)
           if (!llmResponse) {
             console.log('🛑 Ответ от LLM пустой - генерация была прервана');
@@ -760,7 +777,17 @@ const VoiceChat = () => {
     // Захватываем generationId перед асинхронными операциями
     const startGenId = generationIdRef.current;
 
+    // Индикация долгого ожидания (объявляем перед try для доступа в finally)
+    let longWaitTimeout: NodeJS.Timeout | null = null;
+
     try {
+      // Индикация долгого ожидания
+      longWaitTimeout = setTimeout(() => {
+        if (isGeneratingResponse && generationIdRef.current === startGenId) {
+          console.log('⏳ LLM запрос занимает больше 5 секунд...');
+          // Можно показать toast с информацией, но не будем раздражать пользователя
+        }
+      }, 5000);
       console.log('🤖 Отправка сообщения в LLM...');
 
       // Мониторинг запроса
@@ -852,6 +879,13 @@ const VoiceChat = () => {
         endpoint = `${API_URL}/chat/${courseId}/message`;
       }
 
+      // Создаем AbortController для таймаута
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.log('⏱️ Запрос к LLM превысил таймаут (30 секунд)');
+      }, 30000); // 30 секунд таймаут
+
       let response;
       try {
         response = await fetch(endpoint, {
@@ -860,10 +894,38 @@ const VoiceChat = () => {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: controller.signal // Добавляем сигнал для отмены
         });
-      } catch (fetchError) {
+        clearTimeout(timeoutId);
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
         console.error('❌ Fetch error:', fetchError);
+
+        // Проверяем, была ли это отмена по таймауту
+        if (fetchError.name === 'AbortError') {
+          console.error('⏱️ Запрос к LLM превысил таймаут (30 секунд)');
+          toast({
+            title: "Превышено время ожидания",
+            description: "Ответ от преподавателя занимает слишком много времени. Попробуйте еще раз.",
+            variant: "destructive"
+          });
+
+          // Retry при таймауте
+          if (retryCount < MAX_RETRIES) {
+            console.log(`🔄 Таймаут, повторная попытка ${retryCount + 1}...`);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            return sendToLLM(originalMessage, retryCount + 1);
+          }
+        } else if (fetchError.message?.includes('Failed to fetch') || fetchError.message?.includes('network')) {
+          // Обработка сетевых ошибок
+          toast({
+            title: "Проблема с соединением",
+            description: "Проверьте интернет-соединение и попробуйте еще раз.",
+            variant: "destructive"
+          });
+        }
+
         throw fetchError;
       }
 
@@ -961,23 +1023,50 @@ const VoiceChat = () => {
       }
 
       return data.message;
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Ошибка общения с LLM:', error);
 
-      // Retry при ошибке сети
-      if (retryCount < MAX_RETRIES) {
-        console.log(`🔄 Ошибка сети, повторная попытка ${retryCount + 1}...`);
+      // Улучшенная обработка разных типов ошибок
+      const isTimeout = error.name === 'AbortError' || error.message?.includes('timeout');
+      const isNetworkError = error.message?.includes('Failed to fetch') || 
+                           error.message?.includes('network') ||
+                           error.message?.includes('NetworkError');
+
+      // Retry при ошибке сети или таймауте
+      if ((isTimeout || isNetworkError) && retryCount < MAX_RETRIES) {
+        console.log(`🔄 ${isTimeout ? 'Таймаут' : 'Ошибка сети'}, повторная попытка ${retryCount + 1}...`);
         await new Promise(resolve => setTimeout(resolve, 1000));
         return sendToLLM(originalMessage, retryCount + 1);
       }
 
-      toast({
-        title: "Ошибка",
-        description: "Не удалось получить ответ от ассистента",
-        variant: "destructive"
-      });
+      // Показываем конкретное сообщение об ошибке
+      if (isTimeout) {
+        toast({
+          title: "Превышено время ожидания",
+          description: "Ответ от преподавателя занимает слишком много времени. Попробуйте еще раз.",
+          variant: "destructive"
+        });
+      } else if (isNetworkError) {
+        toast({
+          title: "Проблема с соединением",
+          description: "Проверьте интернет-соединение и попробуйте еще раз.",
+          variant: "destructive"
+        });
+      } else {
+        toast({
+          title: "Ошибка",
+          description: "Не удалось получить ответ от ассистента",
+          variant: "destructive"
+        });
+      }
+
       return "Извините, произошла ошибка связи. Попробуйте еще раз.";
     } finally {
+      // Очищаем таймаут индикации долгого ожидания
+      if (longWaitTimeout) {
+        clearTimeout(longWaitTimeout);
+      }
+
       // Сбрасываем флаг только если это был последний активный запрос
       if (generationIdRef.current === startGenId) {
         setIsGeneratingResponse(false);
