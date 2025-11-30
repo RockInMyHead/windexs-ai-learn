@@ -1100,27 +1100,34 @@ const VoiceChat = () => {
 
       // Проверяем, была ли озвучка прервана (generationId изменился)
       const wasInterrupted = generationIdRef.current !== startGenId;
+      const audioWasStopped = !currentAudioRef.current || currentAudioRef.current.paused;
+      const isPlaybackError = error.name === 'NotAllowedError' || error.name === 'AbortError' ||
+                             error.message?.includes('play') || error.message?.includes('paused');
+
       console.log('🔍 TTS error analysis:', {
         wasInterrupted,
+        audioWasStopped,
+        isPlaybackError,
         retryCount,
         currentGenId: generationIdRef.current,
         startGenId,
-        error: error.message
+        error: error.message,
+        errorName: error.name
       });
 
       setIsSpeaking(false);
       isPlayingAudioRef.current = false;
       ttsProgressRef.current = null;
 
-      // Показываем уведомление только если это не повторная попытка и не прерывание
-      if (retryCount === 0 && !wasInterrupted) {
+      // Показываем уведомление только если это реальная ошибка TTS, а не прерывание
+      if (retryCount === 0 && !wasInterrupted && !audioWasStopped && !isPlaybackError) {
         toast({
           title: "Озвучка временно недоступна",
           description: "Ассистент ответит текстом. Вы можете продолжать разговор.",
           variant: "default"
         });
-      } else if (wasInterrupted) {
-        console.log('✅ TTS прервана пользователем - ошибка игнорируется');
+      } else if (wasInterrupted || audioWasStopped || isPlaybackError) {
+        console.log('✅ TTS прервана пользователем или возникла ошибка воспроизведения - уведомление не показывается');
       }
     }
   }, [token, isSoundEnabled, toast, isRecording]);
