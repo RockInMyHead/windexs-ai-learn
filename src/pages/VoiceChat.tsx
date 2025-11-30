@@ -82,10 +82,12 @@ const VoiceChat = () => {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
   const [transcriptDisplay, setTranscriptDisplay] = useState<string>("");
+  const [assistantResponse, setAssistantResponse] = useState<string>("");
 
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
   const lastTranscriptRef = useRef<string>('');
+  const lastProcessedTranscriptRef = useRef<string>(''); // Для предотвращения дублирования
 
   // Механизм отслеживания генерации для отмены при прерывании
   const generationIdRef = useRef<number>(0);
@@ -116,6 +118,9 @@ const VoiceChat = () => {
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
+  // Флаг для предотвращения дублирования запросов к LLM
+  const isProcessingLLMRef = useRef<boolean>(false);
+
 
   // Инициализация аудио контекста для анализа
   const initializeAudioContext = useCallback(async (): Promise<AudioContext> => {
@@ -140,6 +145,12 @@ const VoiceChat = () => {
 
     // Увеличиваем generationId для отмены текущей генерации
     generationIdRef.current += 1;
+
+    // Сбрасываем флаг обработки LLM
+    isProcessingLLMRef.current = false;
+
+    // Очищаем последнюю обработанную транскрипцию при прерывании
+    lastProcessedTranscriptRef.current = '';
 
     // Очищаем очередь аудио
     audioQueueRef.current = [];
@@ -366,6 +377,21 @@ const VoiceChat = () => {
         console.log('👤 Финальный распознанный текст:', transcript);
 
         if (transcript) {
+          // Проверяем на дублирование транскрипции
+          if (transcript === lastProcessedTranscriptRef.current) {
+            console.log('⚠️ Дублирование транскрипции обнаружено, пропускаем:', transcript);
+            return;
+          }
+
+          // Проверяем, не обрабатывается ли уже запрос
+          if (isProcessingLLMRef.current) {
+            console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем');
+            return;
+          }
+
+          isProcessingLLMRef.current = true;
+          lastProcessedTranscriptRef.current = transcript;
+
           // Stop any current TTS
           if (isSpeaking) {
             console.log('🎤 Останавливаю TTS...');
@@ -381,8 +407,12 @@ const VoiceChat = () => {
           // Проверяем, не пустой ли ответ (означает прерывание)
           if (!llmResponse) {
             console.log('🛑 Ответ от LLM пустой - генерация была прервана');
+            isProcessingLLMRef.current = false;
             return;
           }
+
+          // Сохраняем ответ для отображения
+          setAssistantResponse(llmResponse);
 
           // Small delay to ensure previous TTS is fully stopped
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -394,6 +424,7 @@ const VoiceChat = () => {
             console.warn('⚠️ Пропускаем озвучивание пустого ответа');
           }
 
+          isProcessingLLMRef.current = false;
           console.log('✅ Ответ озвучен');
         }
       }
@@ -483,6 +514,14 @@ const VoiceChat = () => {
           console.log('🎯 Fallback транскрипция:', transcript);
           setTranscriptDisplay(transcript);
 
+          // Проверяем, не обрабатывается ли уже запрос
+          if (isProcessingLLMRef.current) {
+            console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем fallback');
+            return;
+          }
+
+          isProcessingLLMRef.current = true;
+
           // Stop any current TTS
           stopCurrentTTS();
 
@@ -490,6 +529,8 @@ const VoiceChat = () => {
           try {
             const llmResponse = await sendToLLM(transcript);
             if (llmResponse && llmResponse.trim()) {
+              // Сохраняем ответ для отображения
+              setAssistantResponse(llmResponse);
               await speakText(llmResponse);
               console.log('✅ Ответ озвучен');
             } else {
@@ -497,6 +538,8 @@ const VoiceChat = () => {
             }
           } catch (error) {
             console.error('❌ Ошибка обработки ответа:', error);
+          } finally {
+            isProcessingLLMRef.current = false;
           }
         }
       } else {
@@ -522,6 +565,7 @@ const VoiceChat = () => {
 
       console.log('🎤 Запуск записи...');
       setTranscriptDisplay("");
+      setAssistantResponse("");
 
       // Check if Web Speech API is available
       if (!isWebSpeechAvailable()) {
@@ -910,14 +954,20 @@ const VoiceChat = () => {
   }, [token, courseId, userProfile, toast]);
 
   // Speak text using OpenAI TTS
-  const speakText = useCallback(async (text: string) => {
+  const speakText = useCallback(async (text: string, retryCount: number = 0) => {
     if (!text || !isSoundEnabled) return;
+
+    const MAX_TTS_RETRIES = 2;
 
     // Захватываем generationId
     const startGenId = generationIdRef.current;
 
     try {
-      console.log('🔊 Генерация озвучки для:', text);
+      console.log('🔊 Генерация озвучки для:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
+      if (retryCount > 0) {
+        console.log(`🔄 TTS повторная попытка ${retryCount}/${MAX_TTS_RETRIES}`);
+      }
+      
       isPlayingAudioRef.current = true;
 
       // Инициализируем прогресс озвучки
@@ -937,8 +987,7 @@ const VoiceChat = () => {
         },
         body: JSON.stringify({
           text,
-          voice: 'nova', // Используем голос nova (как в описании)
-          model: 'tts-1-hd', // HD модель для лучшего качества
+          voice: 'nova', // Используем голос nova
           speed: 0.95 // Скорость речи (0.25 - 4.0)
         })
       });
@@ -950,7 +999,17 @@ const VoiceChat = () => {
       }
 
       if (!response.ok) {
-        throw new Error('Failed to generate speech');
+        const errorData = await response.json().catch(() => ({}));
+        console.error('❌ TTS error response:', response.status, errorData);
+        
+        // Повторная попытка при ошибке
+        if (retryCount < MAX_TTS_RETRIES) {
+          console.log(`🔄 Повторная попытка TTS через 1 секунду...`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          return speakText(text, retryCount + 1);
+        }
+        
+        throw new Error(`Failed to generate speech: ${response.status} ${errorData.error || ''}`);
       }
 
       const audioBlob = await response.blob();
@@ -1017,18 +1076,18 @@ const VoiceChat = () => {
         
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
-        
+
         // Для браузеров кроме Safari - перезапускаем распознавание после ошибки
         if (!isSafari() && speechRecognitionRef.current) {
           setTimeout(() => {
-            try {
+          try {
               console.log('▶️ Перезапускаем распознавание после ошибки (не Safari)');
               speechRecognitionRef.current?.start();
             } catch (e: any) {
               if (e.name !== 'InvalidStateError') {
                 console.warn('⚠️ Ошибка перезапуска:', e);
-              }
-            }
+          }
+        }
           }, 300);
         }
         
@@ -1052,6 +1111,15 @@ const VoiceChat = () => {
       setIsSpeaking(false);
       isPlayingAudioRef.current = false;
       ttsProgressRef.current = null;
+      
+      // Показываем уведомление только если это не повторная попытка
+      if (retryCount === 0) {
+        toast({
+          title: "Озвучка временно недоступна",
+          description: "Ассистент ответит текстом. Вы можете продолжать разговор.",
+          variant: "default"
+        });
+      }
     }
   }, [token, isSoundEnabled, toast, isRecording]);
 
@@ -1139,6 +1207,20 @@ const VoiceChat = () => {
           <div className="text-foreground/80 text-xl md:text-2xl font-light tracking-widest uppercase transition-colors duration-300">
             {statusText}
           </div>
+          
+          {/* Transcript Display */}
+          {transcriptDisplay && (
+            <div className="bg-primary/5 border border-primary/20 rounded-lg px-6 py-3 max-w-xl animate-in fade-in-0 slide-in-from-bottom-4 duration-300">
+              <p className="text-primary font-medium">Вы: {transcriptDisplay}</p>
+            </div>
+          )}
+          
+          {/* Assistant Response Display */}
+          {assistantResponse && (
+            <div className="bg-accent/50 border border-accent rounded-lg px-6 py-4 max-w-xl animate-in fade-in-0 slide-in-from-bottom-4 duration-500">
+              <p className="text-foreground/90 text-base leading-relaxed">{assistantResponse}</p>
+            </div>
+          )}
           
           {/* Interrupt Button - показывается во время TTS для браузеров кроме Safari */}
           {showInterruptButton && (

@@ -1,5 +1,5 @@
 import Navigation from "@/components/Navigation";
-import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2, MessageSquare, Bot, Camera } from "lucide-react";
+import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2, MessageSquare, Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -189,6 +189,15 @@ const CourseChat = () => {
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
+
+                  if (data.transcribedText) {
+                    // Update user message with transcribed text
+                    setMessages(prev => prev.map(m =>
+                      m.role === 'user' && m.content === '🎤 Голосовое сообщение'
+                        ? { ...m, content: data.transcribedText }
+                        : m
+                    ));
+                  }
 
                   if (data.content) {
                     fullContent += data.content;
@@ -648,9 +657,8 @@ const CourseChat = () => {
                       {message.role === "assistant" && (
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
-                            <Bot className="w-4 h-4 text-primary" />
                             <span className="text-xs font-semibold text-primary">
-                              AI Преподаватель
+                              Юлия
                             </span>
                             {message.isStreaming && (
                               <Loader2 className="w-3 h-3 animate-spin text-primary" />

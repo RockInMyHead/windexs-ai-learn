@@ -20,21 +20,6 @@
 - 🌐 Сетевая устойчивость
 - 📱 Совместимость с устройствами
 
-### **phase1-integration-tests.js**
-Интеграционные тесты для Фазы 1 модернизации:
-- 🔧 WebRTC функциональность
-- 🎯 State management
-- 🛡️ Error handling & resilience
-- 🔄 End-to-end voice chat flow
-
-### **phase2-integration-tests.js** *(новая система)*
-Комплексные интеграционные тесты для Фазы 2 стабилизации:
-- 🌐 **Browser Compatibility**: Кросс-браузерная поддержка, оптимизации
-- 🔊 **Echo Detection v2.0**: Улучшенная система обнаружения эха с ML
-- ⚡ **Performance Optimization**: Web Workers, lazy loading, memory management
-- 📊 **Monitoring & Alerting**: Error tracking, performance metrics, alerting
-- 🔗 **Cross-Component Integration**: Взаимодействие всех компонентов
-
 ### **browser-compatibility-tests.js** *(планируется)*
 Тесты для разных браузеров:
 - Chrome Desktop/Mobile

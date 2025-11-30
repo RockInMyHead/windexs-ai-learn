@@ -3,7 +3,6 @@ import Navigation from "@/components/Navigation";
 import { BookOpen, Plus, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { getCourses, deleteCourse, Course } from "@/lib/api";
@@ -150,16 +149,6 @@ const Library = () => {
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div>
-                      <div className="flex justify-between text-sm mb-2">
-                        <span className="text-muted-foreground">Прогресс</span>
-                        <span className="font-semibold text-primary">{course.progress}%</span>
-                      </div>
-                      <Progress value={course.progress} />
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      Следующий урок: <span className="text-foreground font-medium">{course.next_lesson}</span>
-                    </div>
                     <Button
                       className="w-full"
                       onClick={() => navigate(`/learning-mode/${course.subject_id}-${course.grade ? `grade-${course.grade}` : `goal-${course.goal}`}`)}

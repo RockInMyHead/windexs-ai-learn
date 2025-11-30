@@ -1197,6 +1197,12 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // Send transcribed text for voice messages
+    if (messageType === 'voice') {
+      console.log('📝 Отправка транскрибированного текста:', content);
+      res.write(`data: ${JSON.stringify({ transcribedText: content })}\n\n`);
+    }
+
     // Call OpenAI with streaming
     console.log('🚀 Отправка запроса в OpenAI API (stream)...');
     console.log('📝 Сообщения для OpenAI:', JSON.stringify(messages, null, 2));
@@ -1582,7 +1588,8 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
 
     return res.json({
       message: fullResponse,
-      tokensUsed
+      tokensUsed,
+      ...(messageType === 'voice' && { transcribedText: content })
     });
 
   } catch (error) {
@@ -1857,13 +1864,32 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     res.send(buffer);
 
   } catch (error) {
+    console.error('❌ TTS ERROR ===');
     console.error('TTS error details:', {
       message: error.message,
       stack: error.stack,
       name: error.name,
       code: error.code,
-      status: error.status
+      status: error.status,
+      response: error.response?.data
     });
+
+    // Проверяем на специфические ошибки OpenAI
+    if (error.code === 'insufficient_quota') {
+      console.error('💳 Недостаточно квоты на OpenAI API');
+      return res.status(500).json({
+        error: 'Недостаточно квоты OpenAI API',
+        details: 'Пожалуйста, проверьте баланс вашего аккаунта OpenAI'
+      });
+    }
+
+    if (error.code === 'invalid_api_key') {
+      console.error('🔑 Неверный API ключ OpenAI');
+      return res.status(500).json({
+        error: 'Неверный API ключ OpenAI',
+        details: 'Пожалуйста, проверьте ваш OPENAI_API_KEY'
+      });
+    }
 
     res.status(500).json({
       error: 'Ошибка при генерации речи',

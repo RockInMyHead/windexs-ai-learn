@@ -1,7 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { Brain, Sparkles, ArrowRight, Play } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 
 const Hero = () => {
+  const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
+
   const scrollToChat = () => {
     const chatSection = document.getElementById('home-chat');
     if (chatSection) {
@@ -9,6 +14,14 @@ const Hero = () => {
         behavior: 'smooth',
         block: 'start'
       });
+    }
+  };
+
+  const handleStartLearning = () => {
+    if (isAuthenticated) {
+      navigate('/courses');
+    } else {
+      navigate('/login');
     }
   };
   return (
@@ -25,10 +38,6 @@ const Hero = () => {
       
       <div className="container mx-auto max-w-6xl relative z-10">
         <div className="text-center space-y-8 animate-fade-in-up">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 rounded-full border border-primary/20 mb-4">
-            <Sparkles className="w-4 h-4 text-primary" />
-            <span className="text-sm font-medium text-primary">AI-персонализация обучения</span>
-          </div>
           
           <h1 className="text-5xl md:text-7xl lg:text-8xl font-bold leading-tight tracking-tight">
             <span className="inline-block bg-gradient-to-r from-primary via-accent to-primary bg-clip-text text-transparent animate-glow-pulse">
@@ -44,9 +53,10 @@ const Hero = () => {
           </p>
           
           <div className="flex flex-col sm:flex-row gap-4 justify-center items-center pt-6">
-            <Button 
-              size="lg" 
+            <Button
+              size="lg"
               className="group relative overflow-hidden bg-gradient-to-r from-primary to-accent hover:shadow-2xl hover:shadow-primary/50 transition-all duration-300 text-white border-0 px-8 py-6 text-lg"
+              onClick={handleStartLearning}
             >
               <span className="relative z-10 flex items-center">
                 <Brain className="w-5 h-5 mr-2" />

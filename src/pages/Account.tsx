@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Navigation from "@/components/Navigation";
 import { useAuth } from "@/contexts/AuthContext";
-import { User, Mail, Bell, Lock, Palette, Globe, LogOut, RefreshCw } from "lucide-react";
+import { User, Mail, Bell, Lock, LogOut, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -236,40 +236,8 @@ const Account = () => {
             </Card>
 
 
-            <Card className="animate-fade-in" style={{ animationDelay: "100ms" }}>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Palette className="w-5 h-5" />
-                  Внешний вид
-                </CardTitle>
-                <CardDescription>Настройте интерфейс под себя</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label>Темная тема</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Включить темную тему оформления
-                    </p>
-                  </div>
-                  <Switch />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <Label className="flex items-center gap-2">
-                      <Globe className="w-4 h-4" />
-                      Язык
-                    </Label>
-                    <p className="text-sm text-muted-foreground">Русский</p>
-                  </div>
-                  <Button variant="outline" size="sm">
-                    Изменить
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
 
-            <Card className="animate-fade-in" style={{ animationDelay: "300ms" }}>
+            <Card className="animate-fade-in" style={{ animationDelay: "200ms" }}>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Lock className="w-5 h-5" />

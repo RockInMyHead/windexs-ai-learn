@@ -156,7 +156,7 @@ const Chat = () => {
       // Добавляем сообщение пользователя (голосовое)
       const userMessage: Message = {
         role: 'user',
-        content: '🎤 Голосовое сообщение',
+        content: data.transcribedText || '🎤 Голосовое сообщение',
         timestamp: new Date(),
         file: audioFile
       };

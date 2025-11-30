@@ -50,16 +50,16 @@ const AIProcess = () => {
                 <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-accent/10 rounded-3xl blur-xl group-hover:blur-2xl transition-all duration-300 opacity-0 group-hover:opacity-100" />
                 
                 <div className="relative p-8 bg-card rounded-3xl border border-border/50 group-hover:border-primary/50 transition-all duration-300 h-full">
-                  <div className="flex items-start gap-6">
+                  <div className="flex flex-col items-center gap-6 text-center md:flex-row md:items-start md:text-left">
                     <div className="flex-shrink-0 w-16 h-16 bg-gradient-to-br from-primary to-accent rounded-2xl flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                       <Icon className="w-8 h-8 text-white" />
                     </div>
                     
                     <div className="flex-1">
-                      <h3 className="text-2xl font-semibold mb-3 group-hover:text-primary transition-colors">
+                      <h3 className="text-2xl font-semibold mb-3 group-hover:text-primary transition-colors text-center md:text-left">
                         {step.title}
                       </h3>
-                      <p className="text-muted-foreground leading-relaxed">
+                      <p className="text-muted-foreground leading-relaxed text-center md:text-left">
                         {step.description}
                       </p>
                     </div>

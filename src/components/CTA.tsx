@@ -16,7 +16,7 @@ const CTA = () => {
           
           <div className="relative z-10">
             <h2 className="text-4xl md:text-6xl font-bold mb-6 leading-tight">
-              Готовы начать обучение
+              Готовы начать обучение?
             </h2>
             
             <p className="text-xl md:text-2xl text-muted-foreground mb-10 max-w-2xl mx-auto leading-relaxed">
@@ -24,10 +24,10 @@ const CTA = () => {
               с помощью персонализированного обучения
             </p>
           
-            <div className="flex flex-col sm:flex-row gap-4 justify-center items-center mb-8">
+            <div className="flex justify-center mb-8">
               <Button 
                 size="lg"
-                className="group relative overflow-hidden bg-gradient-to-r from-primary to-accent hover:shadow-2xl hover:shadow-primary/60 transition-all duration-300 text-white border-0 px-10 py-7 text-lg font-semibold"
+                className="group relative overflow-hidden bg-gradient-to-r from-primary to-accent hover:shadow-2xl hover:shadow-primary/60 transition-all duration-300 text-white border-0 px-12 py-7 text-lg font-semibold"
               >
                 <span className="relative z-10 flex items-center">
                   Начать обучение
@@ -35,36 +35,8 @@ const CTA = () => {
                 </span>
                 <div className="absolute inset-0 bg-gradient-to-r from-accent to-primary opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
               </Button>
-              
-              <Button 
-                size="lg"
-                variant="outline"
-                className="border-2 border-primary/40 hover:bg-primary/10 hover:border-primary transition-all duration-300 px-10 py-7 text-lg"
-              >
-                Связаться с нами
-              </Button>
             </div>
             
-            <div className="flex flex-wrap justify-center gap-6 text-sm text-muted-foreground">
-              <span className="flex items-center gap-2">
-                <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                  <Sparkles className="w-3 h-3 text-primary" />
-                </div>
-                Кредитная карта не требуется
-              </span>
-              <span className="flex items-center gap-2">
-                <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                  <Sparkles className="w-3 h-3 text-primary" />
-                </div>
-                Доступ ко всем функциям
-              </span>
-              <span className="flex items-center gap-2">
-                <div className="w-5 h-5 rounded-full bg-primary/20 flex items-center justify-center">
-                  <Sparkles className="w-3 h-3 text-primary" />
-                </div>
-                Отмена в любое время
-              </span>
-            </div>
           </div>
         </div>
       </div>

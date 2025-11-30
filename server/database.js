@@ -149,5 +149,25 @@ db.exec(`
   )
 `);
 
+// Create user_personality_profiles table for AI-generated user insights
+db.exec(`
+  CREATE TABLE IF NOT EXISTS user_personality_profiles (
+    id TEXT PRIMARY KEY,
+    user_id TEXT UNIQUE NOT NULL,
+    personality_summary TEXT,
+    communication_style TEXT,
+    interests_hobbies TEXT,
+    goals_aspirations TEXT,
+    challenges_concerns TEXT,
+    preferred_examples TEXT,
+    background_context TEXT,
+    key_memories TEXT,
+    teaching_preferences TEXT,
+    last_updated DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
 export default db;
 

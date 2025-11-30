@@ -67,7 +67,7 @@ const BackgroundStars: React.FC = () => {
         if (!ctx) return;
 
         let animationFrame: number;
-        let startTime = Date.now();
+        const startTime = Date.now();
 
         const animate = () => {
             const time = (Date.now() - startTime) * 0.001;
