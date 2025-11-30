@@ -27,13 +27,37 @@ const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачес
 const isSafari = () => {
   const ua = navigator.userAgent.toLowerCase();
   const result = ua.includes('safari') && !ua.includes('chrome') && !ua.includes('chromium');
-  console.log('🌐 Определение браузера:', { 
-    userAgent: ua, 
+  console.log('🌐 Определение браузера:', {
+    userAgent: ua,
     isSafari: result,
     hasChrome: ua.includes('chrome'),
     hasSafari: ua.includes('safari')
   });
   return result;
+};
+
+// Функция проверки завершения урока
+const checkIfLessonFinished = (response: string): boolean => {
+  const lowerResponse = response.toLowerCase();
+
+  // Ключевые фразы, указывающие на завершение урока
+  const finishIndicators = [
+    'урок закончен',
+    'урок завершен',
+    'занятие окончено',
+    'занятие завершено',
+    'мы закончили урок',
+    'урок подошел к концу',
+    'на этом урок завершается',
+    'до свидания',
+    'до новых встреч',
+    'было приятно заниматься',
+    'спасибо за урок',
+    'урок окончен'
+  ];
+
+  // Проверяем, содержит ли ответ хотя бы одну из фраз
+  return finishIndicators.some(indicator => lowerResponse.includes(indicator));
 };
 
 interface SpeechRecognitionEvent extends Event {
@@ -414,6 +438,15 @@ const VoiceChat = () => {
           // Speak the response (only if not empty)
           if (llmResponse && llmResponse.trim()) {
             await speakText(llmResponse);
+
+            // Проверяем, не завершился ли урок
+            const isLessonFinished = checkIfLessonFinished(llmResponse);
+            if (isLessonFinished) {
+              console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
+              setTimeout(() => {
+                navigate('/courses');
+              }, 2000); // Даем время дослушать финальное сообщение
+            }
           } else {
             console.warn('⚠️ Пропускаем озвучивание пустого ответа');
           }
@@ -523,6 +556,16 @@ const VoiceChat = () => {
             const llmResponse = await sendToLLM(transcript);
             if (llmResponse && llmResponse.trim()) {
               await speakText(llmResponse);
+
+              // Проверяем, не завершился ли урок
+              const isLessonFinished = checkIfLessonFinished(llmResponse);
+              if (isLessonFinished) {
+                console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
+                setTimeout(() => {
+                  navigate('/courses');
+                }, 2000); // Даем время дослушать финальное сообщение
+              }
+
               console.log('✅ Ответ озвучен');
             } else {
               console.warn('⚠️ Пропускаем озвучивание пустого ответа');
