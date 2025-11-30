@@ -176,7 +176,6 @@ const CourseStart = () => {
 
           {selectedOption && (
             <div className="mt-12 animate-fade-in">
-              <h3 className="text-xl font-semibold text-center mb-6">Выберите способ обучения</h3>
               <div className="flex justify-center max-w-md mx-auto">
                 <Button
                   size="lg"
