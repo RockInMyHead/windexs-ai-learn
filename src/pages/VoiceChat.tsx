@@ -248,17 +248,23 @@ const VoiceChat = () => {
   // Инициализация аудио контекста для анализа
   const initializeAudioContext = useCallback(async (): Promise<AudioContext> => {
     if (audioContextRef.current) {
+      console.log('🎵 AudioContext уже инициализирован');
       return audioContextRef.current;
     }
 
+    console.log('🎵 Инициализация AudioContext...');
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     audioContextRef.current = new AudioContextClass();
+    console.log('🎵 AudioContext создан, состояние:', audioContextRef.current.state);
 
     // Resume context if suspended (required by some browsers)
     if (audioContextRef.current.state === 'suspended') {
+      console.log('🎵 AudioContext приостановлен, возобновляем...');
       await audioContextRef.current.resume();
+      console.log('🎵 AudioContext возобновлен, новое состояние:', audioContextRef.current.state);
     }
 
+    console.log('🎵 AudioContext готов к использованию');
     return audioContextRef.current;
   }, []);
 
@@ -485,20 +491,24 @@ const VoiceChat = () => {
    * Возвращает уровень энергии аудио сигнала
    */
   const analyzeAudioEnergy = useCallback((): number => {
-    if (!vadAnalyserRef.current) return 0;
-    
+    if (!vadAnalyserRef.current) {
+      console.log('⚠️ VAD анализатор недоступен');
+      return 0;
+    }
+
     const bufferLength = vadAnalyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
     vadAnalyserRef.current.getByteFrequencyData(dataArray);
-    
+
     // Вычисляем RMS (Root Mean Square) для определения громкости
     let sum = 0;
     for (let i = 0; i < bufferLength; i++) {
       const normalized = dataArray[i] / 255.0;
       sum += normalized * normalized;
     }
-    
+
     const rms = Math.sqrt(sum / bufferLength);
+    console.log('🎚️ Уровень громкости:', (rms * 100).toFixed(1) + '%');
     return rms;
   }, []);
 
@@ -789,19 +799,31 @@ const VoiceChat = () => {
   // Transcribe audio using OpenAI Whisper API (fallback for browsers without Web Speech API)
   const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
     try {
-      console.log('🎤 Отправка аудио на транскрибацию через OpenAI Whisper...');
-      console.log('📊 Размер аудио blob:', audioBlob.size, 'bytes, тип:', audioBlob.type);
+      console.log('🎤 Начинаем транскрибацию через OpenAI Whisper...');
+      console.log('📊 Параметры аудио:', {
+        size: audioBlob.size + ' bytes',
+        type: audioBlob.type,
+        estimatedDuration: Math.round(audioBlob.size / 32000) + ' сек'
+      });
       setIsTranscribing(true);
 
+      console.log('📝 Подготовка FormData для отправки...');
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
 
+      console.log('🌐 Отправка запроса на /transcribe...');
       const response = await fetch(`${API_URL}/transcribe`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
         },
         body: formData
+      });
+
+      console.log('🌐 Получен ответ от сервера транскрибации:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type')
       });
 
       if (!response.ok) {
@@ -811,7 +833,11 @@ const VoiceChat = () => {
       }
 
       const data = await response.json();
-      console.log('✅ Транскрибация завершена:', data.text);
+      console.log('✅ Транскрибация завершена успешно:', {
+        text: data.text,
+        language: data.language,
+        textLength: data.text?.length || 0
+      });
       return data.text || null;
     } catch (error) {
       console.error('❌ Ошибка транскрибации:', error);
@@ -946,6 +972,12 @@ const VoiceChat = () => {
     recognition.onstart = () => {
       console.log('🎙️ Speech recognition started');
       console.log('🎙️ Recognition состояние: started');
+      console.log('🎙️ Параметры распознавания:', {
+        continuous: recognition.continuous,
+        interimResults: recognition.interimResults,
+        lang: recognition.lang,
+        maxAlternatives: recognition.maxAlternatives
+      });
       setIsTranscribing(true);
     };
 
@@ -1330,9 +1362,11 @@ const VoiceChat = () => {
     if (isMicEnabled) {
       // Disable mic
       console.log('🎤 Отключение микрофона...');
+      console.log('🎤 Предыдущее состояние - микрофон:', isMicEnabled, 'запись:', isRecording);
       setIsMicEnabled(false);
       if (isRecording) {
         // Stop recording if it's active
+        console.log('🎤 Останавливаем активную запись...');
         setIsRecording(false);
         setIsTranscribing(false);
 
@@ -1340,8 +1374,9 @@ const VoiceChat = () => {
         if (speechRecognitionRef.current) {
           try {
             speechRecognitionRef.current.stop();
+            console.log('🎤 Web Speech API остановлен');
           } catch (error) {
-            console.log('Speech recognition already stopped');
+            console.log('⚠️ Speech recognition already stopped');
           }
         }
 
@@ -1349,15 +1384,18 @@ const VoiceChat = () => {
         if (mediaRecorderRef.current) {
           try {
             mediaRecorderRef.current.stop();
+            console.log('🎤 MediaRecorder остановлен');
           } catch (error) {
-            console.log('MediaRecorder already stopped');
+            console.log('⚠️ MediaRecorder already stopped');
           }
         }
         if (mediaStreamRef.current) {
           mediaStreamRef.current.getTracks().forEach(track => track.stop());
           mediaStreamRef.current = null;
+          console.log('🎤 MediaStream очищен');
         }
       }
+      console.log('🎤 Микрофон отключен');
       toast({
         title: "Микрофон отключен",
         description: "Распознавание речи приостановлено"
@@ -1365,7 +1403,9 @@ const VoiceChat = () => {
     } else {
       // Enable mic
       console.log('🎤 Включение микрофона...');
+      console.log('🎤 Предыдущее состояние - микрофон:', isMicEnabled, 'запись:', isRecording);
       setIsMicEnabled(true);
+      console.log('🎤 Микрофон включен');
       toast({
         title: "Микрофон включен",
         description: "Распознавание речи активно"
@@ -1757,6 +1797,9 @@ const VoiceChat = () => {
         currentWordIndex: 0
       };
 
+      console.log('🌐 Отправка TTS запроса на сервер...');
+      console.log('🌐 TTS параметры:', { textLength: text.length, voice: 'nova', speed: 0.95 });
+
       const response = await fetch(`${API_URL}/tts`, {
         method: 'POST',
         headers: {
@@ -1768,6 +1811,13 @@ const VoiceChat = () => {
           voice: 'nova', // Используем голос nova
           speed: 0.95 // Скорость речи (0.25 - 4.0)
         })
+      });
+
+      console.log('🌐 Получен ответ от сервера TTS:', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type'),
+        contentLength: response.headers.get('content-length')
       });
 
       // Проверяем прерывание
@@ -1790,28 +1840,52 @@ const VoiceChat = () => {
         throw new Error(`Failed to generate speech: ${response.status} ${errorData.error || ''}`);
       }
 
+      console.log('📦 Получение аудио blob от сервера...');
       const audioBlob = await response.blob();
       console.log('📦 TTS blob получен:', {
         size: audioBlob.size,
-        type: audioBlob.type
+        type: audioBlob.type,
+        estimatedDuration: audioBlob.size > 0 ? Math.round(audioBlob.size / 32000) + ' сек' : 'неизвестно'
       });
 
+      console.log('🔗 Создание Audio URL...');
       const audioUrl = URL.createObjectURL(audioBlob);
       console.log('🔗 Audio URL создан:', audioUrl.substring(0, 50) + '...');
 
+      console.log('🎵 Создание Audio объекта...');
       const audio = new Audio(audioUrl);
-      console.log('🎵 Audio объект создан');
+      console.log('🎵 Audio объект создан:', {
+        duration: audio.duration || 'неизвестно',
+        readyState: audio.readyState,
+        networkState: audio.networkState
+      });
 
       currentAudioRef.current = audio;
 
       // Event handlers
+      audio.oncanplay = () => {
+        console.log('🎵 Audio готово к воспроизведению:', {
+          duration: audio.duration,
+          currentTime: audio.currentTime
+        });
+      };
+
+      audio.onloadstart = () => {
+        console.log('🎵 Начата загрузка аудио');
+      };
+
+      audio.onloadeddata = () => {
+        console.log('🎵 Аудио данные загружены');
+      };
+
       audio.onerror = (event) => {
         console.error('❌ Ошибка Audio элемента:', event);
         console.error('❌ Audio error details:', {
           code: audio.error?.code,
           message: audio.error?.message,
           readyState: audio.readyState,
-          networkState: audio.networkState
+          networkState: audio.networkState,
+          src: audio.src ? 'URL создан' : 'URL не создан'
         });
         // Сбрасываем состояние
         isPlayingAudioRef.current = false;
@@ -1850,22 +1924,26 @@ const VoiceChat = () => {
       };
 
       audio.onended = () => {
-        console.log('✅ Озвучка завершена');
+        console.log('✅ Озвучка завершена успешно');
+        console.log('🧹 Очистка ресурсов после воспроизведения...');
+
         URL.revokeObjectURL(audioUrl);
         currentAudioRef.current = null;
         isPlayingAudioRef.current = false;
         setIsSpeaking(false);
-        
+
         // Сбрасываем прогресс озвучки
         ttsProgressRef.current = null;
-        
+
+        console.log('🔓 Разблокировка VAD после завершения TTS');
         // Разблокируем VAD для Android continuous recording
         setVADBlockedByTTS(false);
-        
+
         // Перезапускаем распознавание после TTS для ВСЕХ браузеров
         // Увеличиваем задержку для Safari, чтобы избежать конфликтов
         if (speechRecognitionRef.current && isRecording) {
           const restartDelay = isSafari() ? 800 : 500; // Safari нуждается в большей задержке
+          console.log(`⏰ Планируем перезапуск распознавания через ${restartDelay}ms`);
           setTimeout(() => {
             try {
               console.log(`▶️ Перезапускаем распознавание после TTS${isSafari() ? ' (Safari)' : ''}`);
@@ -1876,6 +1954,8 @@ const VoiceChat = () => {
               }
             }
           }, restartDelay);
+        } else {
+          console.log('⚠️ Распознавание не перезапущено - либо не активно, либо не инициализировано');
         }
       };
 
@@ -2164,6 +2244,15 @@ const VoiceChat = () => {
 
   // Load user profile on mount
   useEffect(() => {
+    console.log('🎤 VoiceChat компонент загружен');
+    console.log('🎤 Начальная инициализация аудио системы...');
+    console.log('🎤 Состояние браузера:', {
+      userAgent: navigator.userAgent.substring(0, 100) + '...',
+      isSafari: isSafari(),
+      needsFallback: needsFallbackTranscription(),
+      isMobile: isMobileDevice()
+    });
+
     getUserProfile();
   }, [getUserProfile]);
 
@@ -2257,12 +2346,26 @@ const VoiceChat = () => {
   // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
   const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
   
+  // Отладка состояний аудио системы
+  useEffect(() => {
+    console.log('🎤 Состояние аудио системы изменено:', {
+      isRecording,
+      isTranscribing,
+      isGeneratingResponse,
+      isSpeaking,
+      isMicEnabled,
+      isSoundEnabled,
+      useFallbackTranscription,
+      browser: isSafari() ? 'Safari' : 'Other'
+    });
+  }, [isRecording, isTranscribing, isGeneratingResponse, isSpeaking, isMicEnabled, isSoundEnabled, useFallbackTranscription]);
+
   // Отладка кнопки прерывания
   useEffect(() => {
-    console.log('🔘 Кнопка прерывания:', { 
-      showInterruptButton, 
-      isSpeaking, 
-      isSafari: isSafari() 
+    console.log('🔘 Кнопка прерывания:', {
+      showInterruptButton,
+      isSpeaking,
+      isSafari: isSafari()
     });
   }, [showInterruptButton, isSpeaking]);
 
