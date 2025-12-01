@@ -969,19 +969,20 @@ const VoiceChat = () => {
 
           // Перезапускаем распознавание сразу после отправки в LLM
           // (не ждем ответа, чтобы пользователь мог продолжать говорить)
-          if (speechRecognitionRef.current && isRecording && !isSafari()) {
+          if (speechRecognitionRef.current && isRecording) {
+            const restartDelay = isSafari() ? 300 : 500; // Safari быстрее восстанавливается
             setTimeout(() => {
               try {
                 if (speechRecognitionRef.current && isRecording) {
                   speechRecognitionRef.current.start();
-                  console.log('▶️ Перезапуск распознавания после отправки в LLM');
+                  console.log(`▶️ Перезапуск распознавания после отправки в LLM${isSafari() ? ' (Safari)' : ''}`);
                 }
               } catch (e: any) {
                 if (e.name !== 'InvalidStateError') {
                   console.warn('⚠️ Ошибка перезапуска распознавания:', e);
                 }
               }
-            }, 500);
+            }, restartDelay);
           }
 
           // Проверяем, не пустой ли ответ (означает прерывание)
@@ -1748,17 +1749,18 @@ const VoiceChat = () => {
         // Блокируем VAD для Android continuous recording
         setVADBlockedByTTS(true);
         
-        // Для браузеров кроме Safari - останавливаем распознавание когда начинается TTS
-        const shouldStop = !isSafari() && speechRecognitionRef.current;
-        console.log('🔍 Проверка остановки SR:', { 
-          isSafari: isSafari(), 
+        // Останавливаем распознавание во время TTS для ВСЕХ браузеров
+        // Safari тоже может иметь конфликты микрофона с аудио выводом
+        const shouldStop = speechRecognitionRef.current;
+        console.log('🔍 Проверка остановки SR:', {
+          isSafari: isSafari(),
           hasSpeechRecognition: !!speechRecognitionRef.current,
-          shouldStop 
+          shouldStop
         });
-        
+
         if (shouldStop) {
           try {
-            console.log('⏸️ Останавливаем распознавание на время TTS (не Safari)');
+            console.log('⏸️ Останавливаем распознавание на время TTS');
             speechRecognitionRef.current.stop();
           } catch (e) {
             console.warn('⚠️ Ошибка остановки распознавания:', e);
@@ -1779,18 +1781,20 @@ const VoiceChat = () => {
         // Разблокируем VAD для Android continuous recording
         setVADBlockedByTTS(false);
         
-        // Для браузеров кроме Safari - перезапускаем распознавание после TTS
-        if (!isSafari() && speechRecognitionRef.current && isRecording) {
+        // Перезапускаем распознавание после TTS для ВСЕХ браузеров
+        // Увеличиваем задержку для Safari, чтобы избежать конфликтов
+        if (speechRecognitionRef.current && isRecording) {
+          const restartDelay = isSafari() ? 800 : 500; // Safari нуждается в большей задержке
           setTimeout(() => {
             try {
-              console.log('▶️ Перезапускаем распознавание после TTS (не Safari)');
+              console.log(`▶️ Перезапускаем распознавание после TTS${isSafari() ? ' (Safari)' : ''}`);
               speechRecognitionRef.current?.start();
             } catch (e: any) {
               if (e.name !== 'InvalidStateError') {
                 console.warn('⚠️ Ошибка перезапуска распознавания:', e);
               }
             }
-          }, 500); // Увеличили задержку с 300ms до 500ms
+          }, restartDelay);
         }
       };
 
@@ -1807,18 +1811,19 @@ const VoiceChat = () => {
         // Разблокируем VAD для Android continuous recording
         setVADBlockedByTTS(false);
 
-        // Для браузеров кроме Safari - перезапускаем распознавание после ошибки
-        if (!isSafari() && speechRecognitionRef.current && isRecording) {
+        // Перезапускаем распознавание после ошибки для ВСЕХ браузеров
+        if (speechRecognitionRef.current && isRecording) {
+          const restartDelay = isSafari() ? 800 : 500;
           setTimeout(() => {
             try {
-              console.log('▶️ Перезапускаем распознавание после ошибки (не Safari)');
+              console.log(`▶️ Перезапускаем распознавание после ошибки${isSafari() ? ' (Safari)' : ''}`);
               speechRecognitionRef.current?.start();
             } catch (e: any) {
               if (e.name !== 'InvalidStateError') {
                 console.warn('⚠️ Ошибка перезапуска:', e);
               }
             }
-          }, 500);
+          }, restartDelay);
         }
         
         toast({
@@ -1963,8 +1968,8 @@ const VoiceChat = () => {
     return 'Нажмите на микрофон, чтобы начать';
   }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing, useFallbackTranscription]);
   
-  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
-  const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
+  // Показываем кнопку прерывания во время TTS или генерации для ВСЕХ браузеров
+  const showInterruptButton = (isSpeaking || isGeneratingResponse);
   
   // Отладка кнопки прерывания
   useEffect(() => {
