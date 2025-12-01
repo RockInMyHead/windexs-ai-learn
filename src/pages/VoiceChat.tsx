@@ -188,6 +188,8 @@ const VoiceChat = () => {
   const sendToLLMRef = useRef<((message: string) => Promise<string>) | null>(null);
   const speakTextRef = useRef<((text: string) => Promise<void>) | null>(null);
   const stopCurrentTTSRef = useRef<(() => void) | null>(null);
+  const startFallbackRecordingRef = useRef<(() => Promise<boolean>) | null>(null);
+  const stopFallbackRecordingRef = useRef<(() => Promise<string | null>) | null>(null);
   const navigateRef = useRef<any>(navigate);
 
   // Состояние для обработки interim результатов на десктопе
@@ -1971,6 +1973,79 @@ const VoiceChat = () => {
     }
   }, [token, isSoundEnabled, toast, isRecording]);
 
+  // Function to start one-time recording after interruption (for non-Safari browsers)
+  const startInterruptionRecording = useCallback(async (): Promise<void> => {
+    try {
+      console.log('🎤 Начинаем однократную запись после прерывания...');
+
+      // Start fallback recording
+      const started = await startFallbackRecordingRef.current?.();
+      if (!started) {
+        console.error('❌ Не удалось запустить запись после прерывания');
+        return;
+      }
+
+      // Set a timeout to automatically stop recording after 10 seconds (max recording time)
+      const recordingTimeout = setTimeout(async () => {
+        console.log('⏰ Автоматическая остановка записи после прерывания (timeout)');
+        await processInterruptionRecording();
+      }, 10000); // 10 seconds max
+
+      // Store timeout reference for cleanup
+      (window as any).interruptionRecordingTimeout = recordingTimeout;
+
+    } catch (error) {
+      console.error('❌ Ошибка запуска записи после прерывания:', error);
+    }
+  }, []);
+
+  // Function to process recording after interruption
+  const processInterruptionRecording = useCallback(async (): Promise<void> => {
+    try {
+      // Clear timeout if it exists
+      if ((window as any).interruptionRecordingTimeout) {
+        clearTimeout((window as any).interruptionRecordingTimeout);
+        (window as any).interruptionRecordingTimeout = null;
+      }
+
+      console.log('🎯 Обрабатываем запись после прерывания...');
+
+      // Stop recording and get transcript
+      const transcript = await stopFallbackRecordingRef.current?.();
+
+      if (transcript && transcript.trim()) {
+        console.log('🎯 Транскрипция после прерывания:', transcript);
+
+        // Check if LLM is already processing
+        if (isProcessingLLMRef.current) {
+          console.log('⚠️ LLM уже обрабатывает запрос, пропускаем транскрибацию после прерывания');
+          return;
+        }
+
+        isProcessingLLMRef.current = true;
+
+        // Stop any current TTS
+        stopCurrentTTS();
+
+        // Send to LLM
+        try {
+          const llmResponse = await sendToLLMRef.current?.(transcript);
+          if (llmResponse && llmResponse.trim()) {
+            await speakTextRef.current?.(llmResponse);
+          }
+        } catch (error) {
+          console.error('❌ Ошибка обработки ответа LLM после прерывания:', error);
+        } finally {
+          isProcessingLLMRef.current = false;
+        }
+      } else {
+        console.log('⚠️ Пустая транскрибация после прерывания');
+      }
+    } catch (error) {
+      console.error('❌ Ошибка обработки записи после прерывания:', error);
+    }
+  }, []);
+
   // Load user profile on mount
   useEffect(() => {
     getUserProfile();
@@ -1982,7 +2057,9 @@ const VoiceChat = () => {
     sendToLLMRef.current = sendToLLM;
     speakTextRef.current = speakText;
     stopCurrentTTSRef.current = stopCurrentTTS;
-  }, [transcribeWithOpenAI, sendToLLM, speakText, stopCurrentTTS]);
+    startFallbackRecordingRef.current = startFallbackRecording;
+    stopFallbackRecordingRef.current = stopFallbackRecording;
+  }, [transcribeWithOpenAI, sendToLLM, speakText, stopCurrentTTS, startFallbackRecording, stopFallbackRecording]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -2107,22 +2184,37 @@ const VoiceChat = () => {
               variant="outline"
               size="lg"
               className="bg-green-500 hover:bg-green-600 text-white border-green-600 hover:border-green-700 shadow-lg animate-in fade-in-0 zoom-in-95 duration-300"
-              onClick={() => {
+              onClick={async () => {
                 console.log('🛑 Пользователь нажал кнопку прерывания');
                 stopAssistantSpeech();
-                
-                // Перезапускаем распознавание, если оно было активно
-                if (speechRecognitionRef.current && isRecording) {
-                  setTimeout(() => {
-                    try {
-                      console.log('▶️ Перезапуск распознавания после прерывания кнопкой');
-                      speechRecognitionRef.current?.start();
-                    } catch (e: any) {
-                      if (e.name !== 'InvalidStateError') {
-                        console.warn('⚠️ Ошибка перезапуска:', e);
+
+                // После прерывания TTS запускаем транскрибацию через OpenAI для не-Safari браузеров
+                if (!isSafari()) {
+                  console.log('🎤 Запуск однократной записи после прерывания для транскрибации через OpenAI...');
+                  try {
+                    await startInterruptionRecording();
+                  } catch (error) {
+                    console.error('❌ Ошибка запуска записи после прерывания:', error);
+                    toast({
+                      title: "Ошибка записи",
+                      description: "Не удалось начать запись после прерывания",
+                      variant: "destructive"
+                    });
+                  }
+                } else {
+                  // Для Safari перезапускаем Web Speech API
+                  if (speechRecognitionRef.current && isRecording) {
+                    setTimeout(() => {
+                      try {
+                        console.log('▶️ Перезапуск Web Speech API после прерывания (Safari)');
+                        speechRecognitionRef.current?.start();
+                      } catch (e: any) {
+                        if (e.name !== 'InvalidStateError') {
+                          console.warn('⚠️ Ошибка перезапуска Web Speech API:', e);
+                        }
                       }
-                    }
-                  }, 300);
+                    }, 300);
+                  }
                 }
               }}
             >
