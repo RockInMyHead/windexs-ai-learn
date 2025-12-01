@@ -1789,11 +1789,36 @@ const VoiceChat = () => {
       }
 
       const audioBlob = await response.blob();
+      console.log('📦 TTS blob получен:', {
+        size: audioBlob.size,
+        type: audioBlob.type
+      });
+
       const audioUrl = URL.createObjectURL(audioBlob);
+      console.log('🔗 Audio URL создан:', audioUrl.substring(0, 50) + '...');
+
       const audio = new Audio(audioUrl);
+      console.log('🎵 Audio объект создан');
+
       currentAudioRef.current = audio;
 
       // Event handlers
+      audio.onerror = (event) => {
+        console.error('❌ Ошибка Audio элемента:', event);
+        console.error('❌ Audio error details:', {
+          code: audio.error?.code,
+          message: audio.error?.message,
+          readyState: audio.readyState,
+          networkState: audio.networkState
+        });
+        // Сбрасываем состояние
+        isPlayingAudioRef.current = false;
+        setIsSpeaking(false);
+        ttsProgressRef.current = null;
+        URL.revokeObjectURL(audioUrl);
+        currentAudioRef.current = null;
+      };
+
       audio.onplay = () => {
         console.log('🔊 Озвучка начата');
         // Устанавливаем isSpeaking = true только когда аудио реально начинает играть
@@ -1893,10 +1918,17 @@ const VoiceChat = () => {
         return;
       }
 
+      console.log('▶️ Попытка воспроизведения аудио...');
       await audio.play();
+      console.log('✅ audio.play() выполнен успешно');
 
     } catch (error) {
       console.error('❌ Ошибка TTS:', error);
+      console.error('❌ Полная информация об ошибке:', {
+        message: error.message,
+        name: error.name,
+        stack: error.stack
+      });
 
       // Проверяем, была ли озвучка прервана (generationId изменился)
       const wasInterrupted = generationIdRef.current !== startGenId;
@@ -1912,7 +1944,14 @@ const VoiceChat = () => {
         currentGenId: generationIdRef.current,
         startGenId,
         error: error.message,
-        errorName: error.name
+        errorName: error.name,
+        hasAudioElement: !!currentAudioRef.current,
+        audioState: currentAudioRef.current ? {
+          paused: currentAudioRef.current.paused,
+          ended: currentAudioRef.current.ended,
+          readyState: currentAudioRef.current.readyState,
+          error: currentAudioRef.current.error
+        } : null
       });
 
       setIsSpeaking(false);
