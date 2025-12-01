@@ -1973,29 +1973,129 @@ const VoiceChat = () => {
     }
   }, [token, isSoundEnabled, toast, isRecording]);
 
-  // Function to start one-time recording after interruption (for non-Safari browsers)
+  // Function to start automatic recording after interruption (with timeout or silence detection)
   const startInterruptionRecording = useCallback(async (): Promise<void> => {
     try {
-      console.log('🎤 Начинаем однократную запись после прерывания...');
+      console.log('🎤 Запуск автоматической записи после прерывания...');
 
-      // Start fallback recording
-      const started = await startFallbackRecordingRef.current?.();
-      if (!started) {
-        console.error('❌ Не удалось запустить запись после прерывания');
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.error('❌ MediaDevices API недоступен');
         return;
       }
 
-      // Set a timeout to automatically stop recording after 10 seconds (max recording time)
-      const recordingTimeout = setTimeout(async () => {
-        console.log('⏰ Автоматическая остановка записи после прерывания (timeout)');
+      // Get microphone access
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      // Choose optimal audio format
+      const mimeType =
+        MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
+        MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
+        MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
+        'audio/mp4';
+
+      console.log('🎵 Используемый MIME тип:', mimeType);
+
+      // Create MediaRecorder
+      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = mediaRecorder;
+
+      // Handle data collection
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+          console.log('📦 Записан аудио чанк, размер:', event.data.size);
+        }
+      };
+
+      // Handle recording stop
+      mediaRecorder.onstop = async () => {
+        console.log('🛑 Автоматическая запись остановлена, чанков:', audioChunksRef.current.length);
+
+        // Stop all tracks
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
+        }
+
+        // Process the recording
         await processInterruptionRecording();
-      }, 10000); // 10 seconds max
+      };
+
+      // Start recording
+      mediaRecorder.start(100); // Collect data every 100ms
+      console.log('✅ Автоматическая запись начата');
+
+      // Set timeout for automatic stop (15 seconds max)
+      const recordingTimeout = setTimeout(() => {
+        console.log('⏰ Таймер истек - останавливаем автоматическую запись');
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+        }
+      }, 15000); // 15 seconds max recording time
 
       // Store timeout reference for cleanup
       (window as any).interruptionRecordingTimeout = recordingTimeout;
 
+      // Also set up silence detection using basic volume analysis
+      let silenceStartTime = Date.now();
+      const SILENCE_THRESHOLD = 0.01; // Adjust based on testing
+      const SILENCE_DURATION = 2000; // 2 seconds of silence
+
+      // Create audio context for volume monitoring
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      analyser.fftSize = 256;
+      microphone.connect(analyser);
+
+      const checkSilence = () => {
+        if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
+          return; // Recording already stopped
+        }
+
+        analyser.getByteFrequencyData(dataArray);
+
+        // Calculate average volume
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / dataArray.length / 255; // Normalize to 0-1
+
+        if (average < SILENCE_THRESHOLD) {
+          // Silence detected
+          if (Date.now() - silenceStartTime > SILENCE_DURATION) {
+            console.log('🔇 Обнаружена тишина - останавливаем запись');
+            if (mediaRecorderRef.current) {
+              mediaRecorderRef.current.stop();
+            }
+            return;
+          }
+        } else {
+          // Sound detected, reset silence timer
+          silenceStartTime = Date.now();
+        }
+
+        // Continue checking
+        requestAnimationFrame(checkSilence);
+      };
+
+      // Start silence detection
+      requestAnimationFrame(checkSilence);
+
     } catch (error) {
-      console.error('❌ Ошибка запуска записи после прерывания:', error);
+      console.error('❌ Ошибка запуска автоматической записи после прерывания:', error);
     }
   }, []);
 
@@ -2010,8 +2110,24 @@ const VoiceChat = () => {
 
       console.log('🎯 Обрабатываем запись после прерывания...');
 
-      // Stop recording and get transcript
-      const transcript = await stopFallbackRecordingRef.current?.();
+      // Check if we have audio data
+      if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
+        console.log('⚠️ Нет аудио данных для обработки после прерывания');
+        return;
+      }
+
+      // Create audio blob
+      const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
+      const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+      audioChunksRef.current = [];
+
+      console.log('📦 Создан audio blob для транскрибации:', {
+        size: audioBlob.size,
+        type: audioBlob.type
+      });
+
+      // Transcribe using OpenAI
+      const transcript = await transcribeWithOpenAI(audioBlob);
 
       if (transcript && transcript.trim()) {
         console.log('🎯 Транскрипция после прерывания:', transcript);
