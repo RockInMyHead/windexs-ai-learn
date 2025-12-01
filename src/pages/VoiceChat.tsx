@@ -674,8 +674,12 @@ const VoiceChat = () => {
       // Инициализируем VAD AudioContext
       await initializeVADAudioContext(stream);
       
-      // Создаем MediaRecorder
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      // Создаем MediaRecorder - предпочитаем совместимые форматы для OpenAI Whisper
+      const mimeType =
+        MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
+        MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
+        MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
+        'audio/mp4';
       const mediaRecorder = new MediaRecorder(stream, { mimeType });
       mediaRecorderRef.current = mediaRecorder;
       
@@ -845,7 +849,11 @@ const VoiceChat = () => {
       audioChunksRef.current = [];
 
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+        mimeType:
+          MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
+          MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
+          MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
+          'audio/mp4'
       });
       mediaRecorderRef.current = mediaRecorder;
 
