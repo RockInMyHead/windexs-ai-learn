@@ -1968,8 +1968,8 @@ const VoiceChat = () => {
     return 'Нажмите на микрофон, чтобы начать';
   }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing, useFallbackTranscription]);
   
-  // Показываем кнопку прерывания во время TTS или генерации для ВСЕХ браузеров
-  const showInterruptButton = (isSpeaking || isGeneratingResponse);
+  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
+  const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
   
   // Отладка кнопки прерывания
   useEffect(() => {
