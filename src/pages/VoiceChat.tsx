@@ -34,6 +34,9 @@ const MAX_RECORDING_DURATION = 30000; // максимальная длитель
 // Модель LLM для голосового чата
 const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
 
+// Настройки для обработки interim результатов на десктопе
+const INTERIM_PROCESSING_DELAY = 2000; // мс задержки после последнего interim для обработки
+
 // Функция определения Safari
 const isSafari = () => {
   const ua = navigator.userAgent.toLowerCase();
@@ -183,6 +186,17 @@ const VoiceChat = () => {
   const stopCurrentTTSRef = useRef<(() => void) | null>(null);
   const navigateRef = useRef<any>(navigate);
 
+  // Состояние для обработки interim результатов на десктопе
+  const interimProcessingRef = useRef<{
+    lastInterimText: string;
+    lastInterimTime: number;
+    processingTimer: NodeJS.Timeout | null;
+  }>({
+    lastInterimText: '',
+    lastInterimTime: 0,
+    processingTimer: null
+  });
+
   // Update navigate ref when it changes
   useEffect(() => {
     navigateRef.current = navigate;
@@ -245,7 +259,7 @@ const VoiceChat = () => {
   const setVADBlockedByTTS = useCallback((blocked: boolean) => {
     console.log(blocked ? '🔇 VAD заблокирован - TTS воспроизводится' : '🔊 VAD разблокирован - TTS завершен');
     vadStateRef.current.isBlockedByTTS = blocked;
-    
+
     // Очищаем буфер при блокировке (чтобы не отправить эхо)
     if (blocked) {
       vadStateRef.current.audioBuffer = [];
@@ -253,6 +267,85 @@ const VoiceChat = () => {
       vadStateRef.current.silenceStartTime = 0;
     }
   }, []);
+
+  /**
+   * Обработка interim результата с задержкой
+   * На десктопе Web Speech API может не выдавать финальные результаты,
+   * поэтому обрабатываем стабильные interim результаты
+   */
+  const processInterimResult = useCallback(async (transcript: string) => {
+    if (!transcript || !transcript.trim()) return;
+
+    console.log('⚡ Обработка interim результата с задержкой:', transcript);
+
+    // Проверяем, не обрабатывается ли уже запрос
+    if (isProcessingLLMRef.current) {
+      console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем interim');
+      return;
+    }
+
+    // Проверяем дублирование
+    if (transcript === lastProcessedTranscriptRef.current) {
+      console.log('⚠️ Дублирование транскрипции, пропускаем interim');
+      return;
+    }
+
+    isProcessingLLMRef.current = true;
+    lastProcessedTranscriptRef.current = transcript;
+
+    try {
+      // Останавливаем текущий TTS если он играет
+      if (isSpeaking && stopCurrentTTSRef.current) {
+        console.log('🛑 Останавливаем TTS перед новым interim запросом');
+        stopCurrentTTSRef.current();
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      // Отправляем в LLM
+      const llmResponse = await sendToLLMRef.current?.(transcript);
+
+      if (llmResponse && llmResponse.trim()) {
+        // Озвучиваем ответ
+        await speakTextRef.current?.(llmResponse);
+
+        // Проверяем завершение урока
+        const isLessonFinished = checkIfLessonFinished(llmResponse);
+        if (isLessonFinished) {
+          console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
+          setTimeout(() => navigateRef.current('/courses'), 2000);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Ошибка обработки interim результата:', error);
+    } finally {
+      isProcessingLLMRef.current = false;
+    }
+  }, [isSpeaking]);
+
+  /**
+   * Сброс таймера обработки interim результатов
+   */
+  const resetInterimTimer = useCallback(() => {
+    if (interimProcessingRef.current.processingTimer) {
+      clearTimeout(interimProcessingRef.current.processingTimer);
+      interimProcessingRef.current.processingTimer = null;
+    }
+  }, []);
+
+  /**
+   * Установка таймера для обработки interim результата
+   */
+  const scheduleInterimProcessing = useCallback((transcript: string) => {
+    resetInterimTimer();
+
+    interimProcessingRef.current.lastInterimText = transcript;
+    interimProcessingRef.current.lastInterimTime = Date.now();
+
+    interimProcessingRef.current.processingTimer = setTimeout(() => {
+      console.log(`⏰ Таймер истек, обрабатываем interim: "${transcript}"`);
+      processInterimResult(transcript);
+    }, INTERIM_PROCESSING_DELAY);
+  }, [resetInterimTimer, processInterimResult]);
 
   // Основная функция прерывания речи ассистента
   const stopAssistantSpeech = useCallback(() => {
@@ -292,10 +385,13 @@ const VoiceChat = () => {
 
     // Сбрасываем прогресс озвучки
     ttsProgressRef.current = null;
-    
+
+    // Отменяем таймер обработки interim результатов
+    resetInterimTimer();
+
     // Разблокируем VAD для Android continuous recording
     setVADBlockedByTTS(false);
-  }, [setVADBlockedByTTS]);
+  }, [setVADBlockedByTTS, resetInterimTimer]);
 
   // Function to stop current TTS playback
   const stopCurrentTTS = useCallback(() => {
@@ -828,12 +924,20 @@ const VoiceChat = () => {
       if (!result.isFinal) {
         const interimTranscript = result[0].transcript.trim();
         console.log('👤 Interim распознанный текст:', interimTranscript);
+
+        // Для десктопа (не Android) - обрабатываем стабильные interim результаты
+        if (interimTranscript && !needsFallbackTranscription()) {
+          scheduleInterimProcessing(interimTranscript);
+        }
       }
 
       // Обрабатываем финальные результаты
       if (result.isFinal) {
         const transcript = result[0].transcript.trim();
         console.log('👤 Финальный распознанный текст:', transcript);
+
+        // Отменяем таймер interim обработки, так как получили финальный результат
+        resetInterimTimer();
 
         if (transcript) {
           // Проверяем на дублирование транскрипции
@@ -1786,44 +1890,47 @@ const VoiceChat = () => {
   useEffect(() => {
     return () => {
       console.log('🧹 Очистка ресурсов при размонтировании...');
-      
+
+      // Отменяем таймер обработки interim результатов
+      resetInterimTimer();
+
       // Останавливаем continuous recording
       if (isContinuousRecordingRef.current) {
         stopContinuousRecording();
       }
-      
+
       // Останавливаем Speech Recognition
       if (speechRecognitionRef.current) {
         try {
           speechRecognitionRef.current.stop();
-        } catch (e) { 
+        } catch (e) {
           console.warn('⚠️ Ошибка остановки Speech Recognition:', e);
         }
       }
-      
+
       // Останавливаем аудио
       if (currentAudioRef.current) {
         currentAudioRef.current.pause();
         currentAudioRef.current = null;
       }
-      
+
       // Останавливаем MediaRecorder
       if (mediaRecorderRef.current) {
         try {
           mediaRecorderRef.current.stop();
-        } catch (e) { 
+        } catch (e) {
           console.warn('⚠️ Ошибка остановки MediaRecorder:', e);
         }
       }
-      
+
       // Останавливаем микрофон
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
       }
-      
+
       console.log('✅ Ресурсы очищены');
     };
-  }, [stopContinuousRecording]);
+  }, [stopContinuousRecording, resetInterimTimer]);
 
   // Determine Orb state
   const orbState = useMemo(() => {
