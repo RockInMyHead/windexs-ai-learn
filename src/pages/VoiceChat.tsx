@@ -55,14 +55,16 @@ const isSafari = () => {
 // Функция определения устройства, требующего fallback (только Android)
 const needsFallbackTranscription = () => {
   const ua = navigator.userAgent.toLowerCase();
-  // Используем fallback только для Android устройств (iOS работает хорошо с Web Speech API)
-  const needsFallback = /android|blackberry|windows phone|webos/i.test(ua);
+  // Safari использует Web Speech API, все остальные браузеры - OpenAI Whisper
+  const isSafariBrowser = /safari/i.test(ua) && !/chrome|chromium|crios|edg/i.test(ua);
+  const needsFallback = !isSafariBrowser;
   console.log('📱 Определение устройства для fallback:', {
     userAgent: ua,
     needsFallback,
+    isSafari: isSafariBrowser,
     isIOS: /iphone|ipad|ipod/i.test(ua),
     isAndroid: /android/i.test(ua),
-    isDesktop: !/iphone|ipad|ipod|android|blackberry|windows phone|webos/i.test(ua)
+    isChrome: /chrome|chromium|crios/i.test(ua)
   });
   return needsFallback;
 };
@@ -905,7 +907,7 @@ const VoiceChat = () => {
   const initializeSpeechRecognition = useCallback(() => {
     // На устройствах, требующих fallback (Android), используем MediaRecorder + Whisper
     if (needsFallbackTranscription()) {
-      console.log('📱 Устройство требует fallback, используем OpenAI Whisper для стабильности');
+      console.log('📱 Не Safari браузер - используем OpenAI Whisper для стабильности');
       setUseFallbackTranscription(true);
       return null;
     }
@@ -1236,7 +1238,7 @@ const VoiceChat = () => {
 
       // Для Android - запускаем continuous recording с автоматическим VAD
       if (needsFallbackTranscription()) {
-        console.log('📱 Android устройство - используем continuous recording');
+        console.log('📱 Не Safari браузер - используем continuous recording с OpenAI Whisper');
         setUseFallbackTranscription(true);
         
         const started = await startContinuousRecording();
