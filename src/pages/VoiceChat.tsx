@@ -22,9 +22,9 @@ const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api'
 // ========================================
 
 // VAD (Voice Activity Detection) - автоматическое определение речи
-const VAD_SILENCE_DURATION = 1500; // мс тишины после речи для автоотправки
-const VAD_MIN_SPEECH_DURATION = 500; // минимальная длительность речи
-const VAD_ENERGY_THRESHOLD = 0.01; // порог энергии для определения речи
+const VAD_SILENCE_DURATION = 1200; // мс тишины после речи для автоотправки (уменьшили с 1500)
+const VAD_MIN_SPEECH_DURATION = 400; // минимальная длительность речи (уменьшили с 500)
+const VAD_ENERGY_THRESHOLD = 0.006; // порог энергии для определения речи (уменьшили с 0.01)
 const VAD_ANALYSIS_INTERVAL = 100; // интервал анализа аудио (мс)
 
 // Настройки буферизации для continuous recording
@@ -35,7 +35,9 @@ const MAX_RECORDING_DURATION = 30000; // максимальная длитель
 const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
 
 // Настройки для обработки interim результатов на десктопе
-const INTERIM_PROCESSING_DELAY = 2000; // мс задержки после последнего interim для обработки
+const INTERIM_PROCESSING_DELAY = 1500; // мс задержки после последнего interim для обработки (уменьшили с 2000)
+const INTERIM_MAX_DELAY = 8000; // максимальная задержка - принудительная отправка (новое)
+const INTERIM_MIN_LENGTH = 2; // минимальная длина interim текста для обработки
 
 // Функция определения Safari
 const isSafari = () => {
@@ -191,10 +193,14 @@ const VoiceChat = () => {
     lastInterimText: string;
     lastInterimTime: number;
     processingTimer: NodeJS.Timeout | null;
+    maxDelayTimer: NodeJS.Timeout | null; // таймер принудительной отправки
+    lastScheduleTime: number; // время последнего планирования
   }>({
     lastInterimText: '',
     lastInterimTime: 0,
-    processingTimer: null
+    processingTimer: null,
+    maxDelayTimer: null,
+    lastScheduleTime: 0
   });
 
   // Update navigate ref when it changes
@@ -330,21 +336,54 @@ const VoiceChat = () => {
       clearTimeout(interimProcessingRef.current.processingTimer);
       interimProcessingRef.current.processingTimer = null;
     }
+    if (interimProcessingRef.current.maxDelayTimer) {
+      clearTimeout(interimProcessingRef.current.maxDelayTimer);
+      interimProcessingRef.current.maxDelayTimer = null;
+    }
   }, []);
 
   /**
    * Установка таймера для обработки interim результата
    */
   const scheduleInterimProcessing = useCallback((transcript: string) => {
+    const now = Date.now();
+    const timeSinceLastSchedule = now - interimProcessingRef.current.lastScheduleTime;
+
+    // Не сбрасываем таймер слишком часто (защита от шумов)
+    if (timeSinceLastSchedule < 300) { // минимум 300ms между сбросами
+      console.log('⚡ Слишком частый сброс таймера, игнорируем');
+      return;
+    }
+
+    // Если текст слишком короткий или пустой, игнорируем
+    if (!transcript || transcript.trim().length < INTERIM_MIN_LENGTH) {
+      console.log('⚡ Interim текст слишком короткий, игнорируем');
+      return;
+    }
+
     resetInterimTimer();
 
     interimProcessingRef.current.lastInterimText = transcript;
-    interimProcessingRef.current.lastInterimTime = Date.now();
+    interimProcessingRef.current.lastInterimTime = now;
+    interimProcessingRef.current.lastScheduleTime = now;
 
+    // Основной таймер (1.5 секунды)
     interimProcessingRef.current.processingTimer = setTimeout(() => {
-      console.log(`⏰ Таймер истек, обрабатываем interim: "${transcript}"`);
+      console.log(`⏰ Основной таймер истек, обрабатываем interim: "${transcript}"`);
       processInterimResult(transcript);
     }, INTERIM_PROCESSING_DELAY);
+
+    // Таймер принудительной отправки (8 секунд максимум)
+    interimProcessingRef.current.maxDelayTimer = setTimeout(() => {
+      console.log(`⏰ Максимальный таймер истек, принудительно обрабатываем: "${transcript}"`);
+      // Проверяем, что основной таймер еще не сработал
+      if (interimProcessingRef.current.processingTimer) {
+        clearTimeout(interimProcessingRef.current.processingTimer);
+        interimProcessingRef.current.processingTimer = null;
+        processInterimResult(transcript);
+      }
+    }, INTERIM_MAX_DELAY);
+
   }, [resetInterimTimer, processInterimResult]);
 
   // Основная функция прерывания речи ассистента
@@ -388,6 +427,11 @@ const VoiceChat = () => {
 
     // Отменяем таймер обработки interim результатов
     resetInterimTimer();
+
+    // Сбрасываем состояние interim processing
+    interimProcessingRef.current.lastInterimText = '';
+    interimProcessingRef.current.lastInterimTime = 0;
+    interimProcessingRef.current.lastScheduleTime = 0;
 
     // Разблокируем VAD для Android continuous recording
     setVADBlockedByTTS(false);
