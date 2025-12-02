@@ -48,7 +48,7 @@ export const useTranscription = ({
   // Speech detection constants
   const SPEECH_DETECTION_THRESHOLD = 3.0; // Minimum volume level to detect speech
   const SPEECH_END_FRAMES = 15; // Number of consecutive frames below threshold to end speech
-  const SPEECH_END_PAUSE_MS = 3000; // 3 second pause after speech ends
+  const SPEECH_END_PAUSE_MS = 5000; // 5 second pause after speech ends (increased for better UX)
 
   // Safari Interruption State
   const [safariSpeechDetectionCount, setSafariSpeechDetectionCount] = useState(0);
@@ -142,19 +142,23 @@ export const useTranscription = ({
   const handleSpeechEnd = useCallback(async () => {
     if (!speechActiveRef.current || !audioStreamRef.current) return;
 
-    addDebugLog(`[Speech] Speech ended, waiting ${SPEECH_END_PAUSE_MS}ms before transcription...`);
+    addDebugLog(`[Speech] 🎤 Speech ended, waiting ${SPEECH_END_PAUSE_MS}ms before transcription...`);
+    addDebugLog(`[Speech] 💡 If you want to add more, just continue speaking!`);
 
     // Clear existing timeout
     if (speechEndTimeoutRef.current) {
       clearTimeout(speechEndTimeoutRef.current);
     }
 
-    // Set 3-second pause before transcription
+    // Set pause before transcription
     speechEndTimeoutRef.current = window.setTimeout(async () => {
-      if (!speechActiveRef.current) return; // Speech might have restarted
+      if (!speechActiveRef.current) {
+        addDebugLog(`[Speech] ❌ Transcription cancelled - user continued speaking`);
+        return; // Speech might have restarted
+      }
 
       try {
-        addDebugLog(`[Speech] 3-second pause completed, sending to transcription...`);
+        addDebugLog(`[Speech] ⏰ ${SPEECH_END_PAUSE_MS}ms pause completed, sending to transcription...`);
 
         const blob = await stopMediaRecording();
         speechActiveRef.current = false;
@@ -341,13 +345,14 @@ export const useTranscription = ({
           if (average > SPEECH_DETECTION_THRESHOLD) {
             // Speech detected
             if (!speechActiveRef.current) {
-              addDebugLog(`[Speech] Speech started (volume: ${average.toFixed(1)})`);
+              addDebugLog(`[Speech] 🎙️ Speech started (volume: ${average.toFixed(1)})`);
               speechActiveRef.current = true;
             }
             speechEndFrameCountRef.current = 0; // Reset end counter
 
-            // Clear any pending speech end timeout
+            // Clear any pending speech end timeout (allows user to continue speaking)
             if (speechEndTimeoutRef.current) {
+              addDebugLog(`[Speech] 🛑 Transcription timeout cancelled - user continued speaking`);
               clearTimeout(speechEndTimeoutRef.current);
               speechEndTimeoutRef.current = null;
             }
@@ -446,7 +451,8 @@ export const useTranscription = ({
       startVolumeMonitoring(stream);
 
       if (ios || android) {
-        addDebugLog(`[Init] Mobile speech detection enabled (3s pause after speech ends)`);
+        addDebugLog(`[Init] Mobile speech detection enabled (${SPEECH_END_PAUSE_MS}ms pause after speech ends)`);
+        addDebugLog(`[Init] 💡 Continue speaking within ${SPEECH_END_PAUSE_MS/1000}s to add more to your message`);
         // Speech detection is now handled in volume monitoring, no timer needed
       }
 
