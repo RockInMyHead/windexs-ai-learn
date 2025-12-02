@@ -25,7 +25,9 @@ export const useTranscription = ({
   const [microphoneAccessGranted, setMicrophoneAccessGranted] = useState(false);
   const [microphonePermissionStatus, setMicrophonePermissionStatus] = useState<'unknown' | 'granted' | 'denied' | 'prompt'>('unknown');
   const mobileTranscriptionTimerRef = useRef<number | null>(null);
-  
+  const speechEndTimeoutRef = useRef<number | null>(null);
+  const speechActiveRef = useRef(false);
+
   // Refs
   const recognitionRef = useRef<any>(null);
   const recognitionActiveRef = useRef(false);
@@ -43,9 +45,17 @@ export const useTranscription = ({
   const SAFARI_SPEECH_CONFIRMATION_FRAMES = 3;
   const SAFARI_SPEECH_DEBOUNCE = 1000;
 
+  // Speech detection constants
+  const SPEECH_DETECTION_THRESHOLD = 3.0; // Minimum volume level to detect speech
+  const SPEECH_END_FRAMES = 15; // Number of consecutive frames below threshold to end speech
+  const SPEECH_END_PAUSE_MS = 3000; // 3 second pause after speech ends
+
   // Safari Interruption State
   const [safariSpeechDetectionCount, setSafariSpeechDetectionCount] = useState(0);
   const [lastSafariSpeechTime, setLastSafariSpeechTime] = useState(0);
+
+  // Speech end detection state
+  const speechEndFrameCountRef = useRef(0);
 
   // Filter hallucinated text
   const filterHallucinatedText = (text: string): string | null => {
@@ -128,6 +138,59 @@ export const useTranscription = ({
     }
   };
 
+  // Handle speech end with pause
+  const handleSpeechEnd = useCallback(async () => {
+    if (!speechActiveRef.current || !audioStreamRef.current) return;
+
+    addDebugLog(`[Speech] Speech ended, waiting ${SPEECH_END_PAUSE_MS}ms before transcription...`);
+
+    // Clear existing timeout
+    if (speechEndTimeoutRef.current) {
+      clearTimeout(speechEndTimeoutRef.current);
+    }
+
+    // Set 3-second pause before transcription
+    speechEndTimeoutRef.current = window.setTimeout(async () => {
+      if (!speechActiveRef.current) return; // Speech might have restarted
+
+      try {
+        addDebugLog(`[Speech] 3-second pause completed, sending to transcription...`);
+
+        const blob = await stopMediaRecording();
+        speechActiveRef.current = false;
+
+        if (audioStreamRef.current) {
+          startMediaRecording(audioStreamRef.current);
+        }
+
+        if (blob && blob.size > 5000) {
+          const volumeLevel = await checkAudioVolume(blob);
+          if (volumeLevel < 2.0) {
+            addDebugLog(`[Speech] Audio too quiet (${volumeLevel}), skipping`);
+            return;
+          }
+
+          addDebugLog(`[Speech] ✅ Sending ${blob.size} bytes to OpenAI...`);
+          const text = await transcribeWithOpenAI(blob);
+
+          if (text && text.trim()) {
+            const filteredText = filterHallucinatedText(text.trim());
+            if (filteredText) {
+              addDebugLog(`[Speech] ✅ Transcribed: "${filteredText}"`);
+              onTranscriptionComplete(filteredText, 'openai');
+            }
+          }
+        }
+      } catch (error) {
+        addDebugLog(`[Speech] Error during transcription: ${error}`);
+        speechActiveRef.current = false;
+        if (audioStreamRef.current && !mediaRecorderRef.current) {
+          startMediaRecording(audioStreamRef.current);
+        }
+      }
+    }, SPEECH_END_PAUSE_MS);
+  }, [onTranscriptionComplete, addDebugLog]);
+
   // OpenAI transcription
   const transcribeWithOpenAI = async (audioBlob: Blob): Promise<string | null> => {
     try {
@@ -135,7 +198,7 @@ export const useTranscription = ({
       setTranscriptionStatus("Распознаю речь...");
 
       const text = await psychologistAI.transcribeAudio(audioBlob);
-      
+
       if (text && text.trim()) {
         addDebugLog(`[OpenAI] ✅ Success: "${text.substring(0, 50)}..."`);
         return text.trim();
@@ -269,9 +332,37 @@ export const useTranscription = ({
 
       const checkVolume = () => {
         if (!recognitionActiveRef.current || !audioAnalyserRef.current) return;
-        
+
         analyser.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+        // Speech detection for mobile devices (OpenAI mode)
+        if (isIOSDevice() || isAndroidDevice()) {
+          if (average > SPEECH_DETECTION_THRESHOLD) {
+            // Speech detected
+            if (!speechActiveRef.current) {
+              addDebugLog(`[Speech] Speech started (volume: ${average.toFixed(1)})`);
+              speechActiveRef.current = true;
+            }
+            speechEndFrameCountRef.current = 0; // Reset end counter
+
+            // Clear any pending speech end timeout
+            if (speechEndTimeoutRef.current) {
+              clearTimeout(speechEndTimeoutRef.current);
+              speechEndTimeoutRef.current = null;
+            }
+          } else {
+            // No speech detected
+            if (speechActiveRef.current) {
+              speechEndFrameCountRef.current++;
+              if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
+                // Speech has ended
+                addDebugLog(`[Speech] Speech ended (volume: ${average.toFixed(1)}), frames below threshold: ${speechEndFrameCountRef.current}`);
+                handleSpeechEnd();
+              }
+            }
+          }
+        }
 
         if (!hasEchoProblems()) {
           const isAssistantActive = isTTSActiveRef.current;
@@ -355,8 +446,8 @@ export const useTranscription = ({
       startVolumeMonitoring(stream);
 
       if (ios || android) {
-        addDebugLog(`[Init] Starting mobile transcription timer`);
-        startMobileTranscriptionTimer();
+        addDebugLog(`[Init] Mobile speech detection enabled (3s pause after speech ends)`);
+        // Speech detection is now handled in volume monitoring, no timer needed
       }
 
       if (shouldForceOpenAI) return;
@@ -483,6 +574,7 @@ export const useTranscription = ({
   const cleanup = useCallback(() => {
     lastProcessedTextRef.current = '';
     recognitionActiveRef.current = false;
+    speechActiveRef.current = false;
     if (recognitionRef.current) try { recognitionRef.current.stop(); } catch(e) {}
     stopVolumeMonitoring();
     stopMobileTranscriptionTimer();
@@ -492,6 +584,10 @@ export const useTranscription = ({
       audioStreamRef.current = null;
     }
     if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+    if (speechEndTimeoutRef.current) {
+      clearTimeout(speechEndTimeoutRef.current);
+      speechEndTimeoutRef.current = null;
+    }
   }, [stopMobileTranscriptionTimer]);
 
   useEffect(() => {
