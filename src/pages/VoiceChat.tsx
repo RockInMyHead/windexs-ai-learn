@@ -1,2487 +1,404 @@
 import Navigation from "@/components/Navigation";
 import { useParams, useNavigate } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
-import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2 } from "lucide-react";
+import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2, Bug, X, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { monitorLLMRequest, monitorLLMResponse, isSuspiciousMessage, generateSafeAlternative, generateSuperSafePhrase, updateLearnedAlternatives } from "@/utils/llmMonitoring";
 import AssistantOrb from "@/components/AssistantOrb";
-// import BackgroundStars from "@/components/BackgroundStars";
 
-// API URL from environment
-const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
+// Hooks
+import { useTTS } from "@/hooks/useTTS";
+import { useLLM } from "@/hooks/useLLM";
+import { useTranscription } from "@/hooks/useTranscription";
 
-// Web Speech API types
+// Debug Logs Component
+const DebugLogs = ({ logs, isVisible, onToggle, onClear }: {
+  logs: string[];
+  isVisible: boolean;
+  onToggle: () => void;
+  onClear: () => void;
+}) => {
+  if (!isVisible) return null;
 
-// ========================================
-// КОНСТАНТЫ ДЛЯ АВТОМАТИЧЕСКОГО РАСПОЗНАВАНИЯ
-// ========================================
-
-// VAD (Voice Activity Detection) - автоматическое определение речи
-const VAD_SILENCE_DURATION = 1200; // мс тишины после речи для автоотправки (уменьшили с 1500)
-const VAD_MIN_SPEECH_DURATION = 400; // минимальная длительность речи (уменьшили с 500)
-const VAD_ENERGY_THRESHOLD = 0.006; // порог энергии для определения речи (уменьшили с 0.01)
-const VAD_ANALYSIS_INTERVAL = 100; // интервал анализа аудио (мс)
-
-// Настройки буферизации для continuous recording
-const RECORDING_CHUNK_SIZE = 100; // размер chunk для MediaRecorder (мс)
-const MAX_RECORDING_DURATION = 30000; // максимальная длительность одной записи (мс)
-
-// Модель LLM для голосового чата
-const VOICE_CHAT_LLM_MODEL = 'gpt-5.1'; // GPT-5.1 для высококачественного голосового общения
-
-// Настройки для обработки interim результатов на десктопе
-const INTERIM_PROCESSING_DELAY = 1500; // мс задержки после последнего interim для обработки (уменьшили с 2000)
-const INTERIM_MAX_DELAY = 8000; // максимальная задержка - принудительная отправка (новое)
-const INTERIM_MIN_LENGTH = 2; // минимальная длина interim текста для обработки
-
-// Функция определения Safari
-const isSafari = () => {
-  const ua = navigator.userAgent.toLowerCase();
-  const result = ua.includes('safari') && !ua.includes('chrome') && !ua.includes('chromium');
-  console.log('🌐 Определение браузера:', {
-    userAgent: ua,
-    isSafari: result,
-    hasChrome: ua.includes('chrome'),
-    hasSafari: ua.includes('safari')
-  });
-  return result;
+  return (
+    <div className="fixed bottom-4 right-4 w-96 max-h-96 bg-black/90 text-green-400 font-mono text-xs rounded-lg border border-gray-600 overflow-hidden z-50">
+      <div className="flex items-center justify-between p-2 bg-gray-800 border-b border-gray-600">
+        <span className="flex items-center gap-2">
+          <Bug className="w-4 h-4" />
+          Debug Logs
+        </span>
+        <div className="flex gap-1">
+          <Button
+            onClick={onClear}
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-xs text-gray-400 hover:text-white"
+          >
+            Clear
+          </Button>
+          <Button
+            onClick={onToggle}
+            size="sm"
+            variant="ghost"
+            className="h-6 w-6 p-0 text-gray-400 hover:text-white"
+          >
+            <X className="w-3 h-3" />
+          </Button>
+        </div>
+      </div>
+      <div className="p-2 max-h-80 overflow-y-auto">
+        {logs.length === 0 ? (
+          <div className="text-gray-500 italic">No logs yet...</div>
+        ) : (
+          logs.slice(-50).map((log, index) => (
+            <div key={index} className="mb-1 leading-tight">
+              <span className="text-gray-500">[{new Date().toLocaleTimeString()}]</span> {log}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 };
-
-// Функция определения устройства, требующего fallback (только Android)
-const needsFallbackTranscription = () => {
-  const ua = navigator.userAgent.toLowerCase();
-  // Safari использует Web Speech API, все остальные браузеры - OpenAI Whisper
-  const isSafariBrowser = /safari/i.test(ua) && !/chrome|chromium|crios|edg/i.test(ua);
-  const needsFallback = !isSafariBrowser;
-  console.log('📱 Определение устройства для fallback:', {
-    userAgent: ua,
-    needsFallback,
-    isSafari: isSafariBrowser,
-    isIOS: /iphone|ipad|ipod/i.test(ua),
-    isAndroid: /android/i.test(ua),
-    isChrome: /chrome|chromium|crios/i.test(ua)
-  });
-  return needsFallback;
-};
-
-// Функция определения мобильного устройства (для UI адаптации)
-const isMobileDevice = () => {
-  const ua = navigator.userAgent.toLowerCase();
-  const isMobile = /iphone|ipad|ipod|android|blackberry|windows phone|webos/i.test(ua);
-  return isMobile;
-};
-
-// Функция проверки завершения урока
-const checkIfLessonFinished = (response: string): boolean => {
-  const lowerResponse = response.toLowerCase();
-
-  // Ключевые фразы, указывающие на завершение урока
-  const finishIndicators = [
-    'урок закончен',
-    'урок завершен',
-    'занятие окончено',
-    'занятие завершено',
-    'мы закончили урок',
-    'урок подошел к концу',
-    'на этом урок завершается',
-    'до свидания',
-    'до новых встреч',
-    'было приятно заниматься',
-    'спасибо за урок',
-    'урок окончен'
-  ];
-
-  // Проверяем, содержит ли ответ хотя бы одну из фраз
-  return finishIndicators.some(indicator => lowerResponse.includes(indicator));
-};
-
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-}
-
-interface SpeechRecognitionErrorEvent extends Event {
-  error: string;
-  message?: string;
-}
-
-interface SpeechRecognition extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  maxAlternatives: number;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onstart: ((event: Event) => void) | null;
-  onresult: ((event: SpeechRecognitionEvent) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
-  onend: ((event: Event) => void) | null;
-}
-
-declare global {
-  interface Window {
-    SpeechRecognition?: new () => SpeechRecognition;
-    webkitSpeechRecognition?: new () => SpeechRecognition;
-    mozSpeechRecognition?: new () => SpeechRecognition; // Firefox support
-  }
-}
 
 const VoiceChat = () => {
   const { courseId } = useParams();
   const navigate = useNavigate();
-  const { token } = useAuth();
   const { toast } = useToast();
 
-  const [isRecording, setIsRecording] = useState(false);
-  const [isTranscribing, setIsTranscribing] = useState(false);
-  const [isGeneratingResponse, setIsGeneratingResponse] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isMicEnabled, setIsMicEnabled] = useState(true);
-  const [isSoundEnabled, setIsSoundEnabled] = useState(true);
-  const [userProfile, setUserProfile] = useState<any>(null);
-  const [useFallbackTranscription, setUseFallbackTranscription] = useState(false);
+  // UI State
+  const [isCallActive, setIsCallActive] = useState(false);
+  const [isInitializingCall, setIsInitializingCall] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [callDuration, setCallDuration] = useState(0);
+  const [isMuted, setIsMuted] = useState(false);
 
-  const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
-  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
-  const lastTranscriptRef = useRef<string>('');
-  const lastProcessedTranscriptRef = useRef<string>(''); // Для предотвращения дублирования
+  // Debug Logs State
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [showDebugLogs, setShowDebugLogs] = useState(false);
 
-  // Механизм отслеживания генерации для отмены при прерывании
-  const generationIdRef = useRef<number>(0);
+  // Refs
+  const callTimerRef = useRef<number | null>(null);
+  const isAssistantSpeakingRef = useRef(false);
 
-  // Аудио контекст и анализатор для мониторинга громкости
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
-  const microphoneSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const volumeMonitorRef = useRef<number | null>(null);
+  // Debug logging functions
+  const addDebugLog = useCallback((message: string) => {
+    console.log(message);
+    setDebugLogs(prev => [...prev, message]);
+  }, []);
 
-  // Состояние воспроизведения аудио
-  const isPlayingAudioRef = useRef<boolean>(false);
+  const clearDebugLogs = useCallback(() => {
+    setDebugLogs([]);
+  }, []);
 
-  // Очередь аудио для последовательного воспроизведения
-  const audioQueueRef = useRef<ArrayBuffer[]>([]);
+  const toggleDebugLogs = useCallback(() => {
+    setShowDebugLogs(prev => !prev);
+  }, []);
 
-  // Отслеживание прогресса озвучки для фильтрации эха
-  const ttsProgressRef = useRef<{
-    startTime: number;
-    text: string;
-    duration: number; // примерная длительность в мс
-    words: string[]; // слова по порядку
-    currentWordIndex: number;
-  } | null>(null);
+  // --- Hooks Initialization ---
 
-  // Fallback recording refs (for browsers without Web Speech API)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-
-  // Флаг для предотвращения дублирования запросов к LLM
-  const isProcessingLLMRef = useRef<boolean>(false);
-
-  // Forward refs для функций, используемых в VAD (избегаем проблем с порядком объявления)
-  const transcribeWithOpenAIRef = useRef<((blob: Blob) => Promise<string | null>) | null>(null);
-  const sendToLLMRef = useRef<((message: string) => Promise<string>) | null>(null);
-  const speakTextRef = useRef<((text: string) => Promise<void>) | null>(null);
-  const stopCurrentTTSRef = useRef<(() => void) | null>(null);
-  const startFallbackRecordingRef = useRef<(() => Promise<boolean>) | null>(null);
-  const stopFallbackRecordingRef = useRef<(() => Promise<string | null>) | null>(null);
-  const navigateRef = useRef<any>(navigate);
-
-  // Состояние для обработки interim результатов на десктопе
-  const interimProcessingRef = useRef<{
-    lastInterimText: string;
-    lastInterimTime: number;
-    processingTimer: NodeJS.Timeout | null;
-    maxDelayTimer: NodeJS.Timeout | null; // таймер принудительной отправки
-    lastScheduleTime: number; // время последнего планирования
-  }>({
-    lastInterimText: '',
-    lastInterimTime: 0,
-    processingTimer: null,
-    maxDelayTimer: null,
-    lastScheduleTime: 0
+  // 1. TTS Service
+  const {
+    speak,
+    stop: stopTTS,
+    resetDeduplication,
+    isPlaying: isTTSPlaying,
+    isSynthesizing: isTTSSynthesizing,
+  } = useTTS({
+    onPlaybackStatusChange: (isActive) => {
+      isAssistantSpeakingRef.current = isActive;
+      if (!isActive) {
+        console.log('[TTS] TTS session ended, ready for new text');
+      }
+    }
   });
 
-  // Update navigate ref when it changes
+  // Update speaking ref
   useEffect(() => {
-    navigateRef.current = navigate;
-  }, [navigate]);
+    isAssistantSpeakingRef.current = isTTSPlaying || isTTSSynthesizing;
+  }, [isTTSPlaying, isTTSSynthesizing]);
 
-  // ========================================
-  // REFS ДЛЯ АВТОМАТИЧЕСКОГО CONTINUOUS RECORDING (Android)
-  // ========================================
-  
-  // VAD state management
-  const vadStateRef = useRef<{
-    isSpeaking: boolean;          // Идет ли речь сейчас
-    speechStartTime: number;      // Время начала речи
-    lastSoundTime: number;        // Время последнего звука
-    silenceStartTime: number;     // Время начала тишины
-    audioBuffer: Blob[];          // Буфер аудио chunks
-    isBlockedByTTS: boolean;      // Заблокирована ли отправка из-за TTS
-  }>({
-    isSpeaking: false,
-    speechStartTime: 0,
-    lastSoundTime: 0,
-    silenceStartTime: 0,
-    audioBuffer: [],
-    isBlockedByTTS: false
+  // 2. LLM Service
+  const {
+    processUserMessage,
+    loadUserProfile,
+    addToConversation,
+    isProcessing: isAIProcessing
+  } = useLLM({
+    courseId,
+    onResponseGenerated: async (text) => {
+      await speak(text);
+    },
+    onError: (err) => setError(err)
   });
 
-  // Интервал для VAD анализа
-  const vadAnalysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // AudioContext для анализа громкости (используется для VAD)
-  const vadAudioContextRef = useRef<AudioContext | null>(null);
-  const vadAnalyserRef = useRef<AnalyserNode | null>(null);
-  const vadMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  
-  // Флаг continuous recording для Android
-  const isContinuousRecordingRef = useRef<boolean>(false);
+  // 3. Transcription Service
+  const {
+    initializeRecognition,
+    cleanup: cleanupRecognition,
+    transcriptionStatus,
+    microphoneAccessGranted,
+    microphonePermissionStatus,
+    forceOpenAI,
+    isIOS,
+    stopRecognition,
+    startRecognition
+  } = useTranscription({
+    isTTSActiveRef: isAssistantSpeakingRef,
+    addDebugLog,
+    onTranscriptionComplete: async (text, source) => {
+      console.log(`[VoiceChat] onTranscriptionComplete: "${text}" from ${source}`);
+      if (!text) return;
 
+      if (source !== 'manual') stopTTS();
+      resetDeduplication();
 
-  // Инициализация аудио контекста для анализа
-  const initializeAudioContext = useCallback(async (): Promise<AudioContext> => {
-    if (audioContextRef.current) {
-      console.log('🎵 AudioContext уже инициализирован');
-      return audioContextRef.current;
-    }
+      await processUserMessage(text);
+    },
+    onInterruption: () => {
+      stopTTS();
+    },
+    onSpeechStart: () => {
+      // Optional: UI indication
+    },
+    onError: (err) => setError(err)
+  });
 
-    console.log('🎵 Инициализация AudioContext...');
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    audioContextRef.current = new AudioContextClass();
-    console.log('🎵 AudioContext создан, состояние:', audioContextRef.current.state);
+  // --- Call Logic ---
 
-    // Resume context if suspended (required by some browsers)
-    if (audioContextRef.current.state === 'suspended') {
-      console.log('🎵 AudioContext приостановлен, возобновляем...');
-      await audioContextRef.current.resume();
-      console.log('🎵 AudioContext возобновлен, новое состояние:', audioContextRef.current.state);
-    }
-
-    console.log('🎵 AudioContext готов к использованию');
-    return audioContextRef.current;
-  }, []);
-
-  /**
-   * Блокировка/разблокировка отправки во время TTS
-   * Эта функция должна быть объявлена рано, так как используется в других функциях
-   */
-  const setVADBlockedByTTS = useCallback((blocked: boolean) => {
-    console.log(blocked ? '🔇 VAD заблокирован - TTS воспроизводится' : '🔊 VAD разблокирован - TTS завершен');
-    vadStateRef.current.isBlockedByTTS = blocked;
-
-    // Очищаем буфер при блокировке (чтобы не отправить эхо)
-    if (blocked) {
-      vadStateRef.current.audioBuffer = [];
-      vadStateRef.current.isSpeaking = false;
-      vadStateRef.current.silenceStartTime = 0;
-    }
-  }, []);
-
-  /**
-   * Обработка interim результата с задержкой
-   * На десктопе Web Speech API может не выдавать финальные результаты,
-   * поэтому обрабатываем стабильные interim результаты
-   */
-  const processInterimResult = useCallback(async (transcript: string) => {
-    if (!transcript || !transcript.trim()) return;
-
-    console.log('⚡ Обработка interim результата с задержкой:', transcript);
-
-    // Проверяем, не обрабатывается ли уже запрос
-    if (isProcessingLLMRef.current) {
-      console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем interim');
-      return;
-    }
-
-    // Проверяем дублирование
-    if (transcript === lastProcessedTranscriptRef.current) {
-      console.log('⚠️ Дублирование транскрипции, пропускаем interim');
-      return;
-    }
-
-    isProcessingLLMRef.current = true;
-    lastProcessedTranscriptRef.current = transcript;
+  const startCall = async () => {
+    if (isCallActive) return;
+    setIsInitializingCall(true);
+    setError(null);
 
     try {
-      // Останавливаем текущий TTS если он играет
-      if (isSpeaking && stopCurrentTTSRef.current) {
-        console.log('🛑 Останавливаем TTS перед новым interim запросом');
-        stopCurrentTTSRef.current();
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+      // Load user context
+      await loadUserProfile();
 
-      // Отправляем в LLM
-      const llmResponse = await sendToLLMRef.current?.(transcript);
+      // Initialize Audio/Recognition
+      await initializeRecognition();
 
-      if (llmResponse && llmResponse.trim()) {
-        // Озвучиваем ответ
-        await speakTextRef.current?.(llmResponse);
+      // UI Updates
+      setIsCallActive(true);
+      setCallDuration(0);
 
-        // Проверяем завершение урока
-        const isLessonFinished = checkIfLessonFinished(llmResponse);
-        if (isLessonFinished) {
-          console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
-          setTimeout(() => navigateRef.current('/courses'), 2000);
-        }
-      }
-    } catch (error) {
-      console.error('❌ Ошибка обработки interim результата:', error);
-    } finally {
-      isProcessingLLMRef.current = false;
-    }
-  }, [isSpeaking]);
-
-  /**
-   * Сброс таймера обработки interim результатов
-   */
-  const resetInterimTimer = useCallback(() => {
-    if (interimProcessingRef.current.processingTimer) {
-      clearTimeout(interimProcessingRef.current.processingTimer);
-      interimProcessingRef.current.processingTimer = null;
-    }
-    if (interimProcessingRef.current.maxDelayTimer) {
-      clearTimeout(interimProcessingRef.current.maxDelayTimer);
-      interimProcessingRef.current.maxDelayTimer = null;
-    }
-  }, []);
-
-  /**
-   * Установка таймера для обработки interim результата
-   */
-  const scheduleInterimProcessing = useCallback((transcript: string) => {
-    const now = Date.now();
-    const timeSinceLastSchedule = now - interimProcessingRef.current.lastScheduleTime;
-
-    // Не сбрасываем таймер слишком часто (защита от шумов)
-    if (timeSinceLastSchedule < 300) { // минимум 300ms между сбросами
-      console.log('⚡ Слишком частый сброс таймера, игнорируем');
-      return;
-    }
-
-    // Если текст слишком короткий или пустой, игнорируем
-    if (!transcript || transcript.trim().length < INTERIM_MIN_LENGTH) {
-      console.log('⚡ Interim текст слишком короткий, игнорируем');
-      return;
-    }
-
-    resetInterimTimer();
-
-    interimProcessingRef.current.lastInterimText = transcript;
-    interimProcessingRef.current.lastInterimTime = now;
-    interimProcessingRef.current.lastScheduleTime = now;
-
-    // Основной таймер (1.5 секунды)
-    interimProcessingRef.current.processingTimer = setTimeout(() => {
-      console.log(`⏰ Основной таймер истек, обрабатываем interim: "${transcript}"`);
-      processInterimResult(transcript);
-    }, INTERIM_PROCESSING_DELAY);
-
-    // Таймер принудительной отправки (8 секунд максимум)
-    interimProcessingRef.current.maxDelayTimer = setTimeout(() => {
-      console.log(`⏰ Максимальный таймер истек, принудительно обрабатываем: "${transcript}"`);
-      // Проверяем, что основной таймер еще не сработал
-      if (interimProcessingRef.current.processingTimer) {
-        clearTimeout(interimProcessingRef.current.processingTimer);
-        interimProcessingRef.current.processingTimer = null;
-        processInterimResult(transcript);
-      }
-    }, INTERIM_MAX_DELAY);
-
-  }, [resetInterimTimer, processInterimResult]);
-
-  // Основная функция прерывания речи ассистента
-  const stopAssistantSpeech = useCallback(() => {
-    console.log('🛑 Прерываем речь ассистента');
-
-    // Увеличиваем generationId для отмены текущей генерации
-    generationIdRef.current += 1;
-
-    // Сбрасываем флаг обработки LLM
-    isProcessingLLMRef.current = false;
-
-    // Очищаем последнюю обработанную транскрипцию при прерывании
-    lastProcessedTranscriptRef.current = '';
-
-    // Очищаем очередь аудио
-    audioQueueRef.current = [];
-
-    // Останавливаем текущее воспроизведение
-    if (currentAudioRef.current) {
-      try {
-        currentAudioRef.current.pause();
-        currentAudioRef.current.currentTime = 0;
-        currentAudioRef.current.volume = 0;
-        currentAudioRef.current.muted = true;
-        currentAudioRef.current.src = '';
-        currentAudioRef.current.load();
-      } catch (error) {
-        console.warn('⚠️ Ошибка при остановке аудио:', error);
-      }
-      currentAudioRef.current = null;
-    }
-
-
-    // Сбрасываем состояние
-    isPlayingAudioRef.current = false;
-    setIsSpeaking(false);
-
-    // Сбрасываем прогресс озвучки
-    ttsProgressRef.current = null;
-
-    // Отменяем таймер обработки interim результатов
-    resetInterimTimer();
-
-    // Сбрасываем состояние interim processing
-    interimProcessingRef.current.lastInterimText = '';
-    interimProcessingRef.current.lastInterimTime = 0;
-    interimProcessingRef.current.lastScheduleTime = 0;
-
-    // Разблокируем VAD для Android continuous recording
-    setVADBlockedByTTS(false);
-  }, [setVADBlockedByTTS, resetInterimTimer]);
-
-  // Function to stop current TTS playback
-  const stopCurrentTTS = useCallback(() => {
-    stopAssistantSpeech();
-  }, []);
-
-  // ========================================
-  // АВТОМАТИЧЕСКОЕ CONTINUOUS RECORDING ДЛЯ ANDROID
-  // ========================================
-
-  /**
-   * Инициализация AudioContext для VAD анализа
-   * Создает анализатор громкости для определения речи
-   */
-  const initializeVADAudioContext = useCallback(async (stream: MediaStream): Promise<void> => {
-    try {
-      console.log('🎙️ Инициализация VAD AudioContext...');
-      
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      vadAudioContextRef.current = new AudioContextClass();
-      
-      if (vadAudioContextRef.current.state === 'suspended') {
-        await vadAudioContextRef.current.resume();
-      }
-      
-      // Создаем анализатор
-      vadAnalyserRef.current = vadAudioContextRef.current.createAnalyser();
-      vadAnalyserRef.current.fftSize = 2048;
-      vadAnalyserRef.current.smoothingTimeConstant = 0.8;
-      
-      // Подключаем микрофон к анализатору
-      vadMicSourceRef.current = vadAudioContextRef.current.createMediaStreamSource(stream);
-      vadMicSourceRef.current.connect(vadAnalyserRef.current);
-      
-      console.log('✅ VAD AudioContext инициализирован');
-    } catch (error) {
-      console.error('❌ Ошибка инициализации VAD AudioContext:', error);
-    }
-  }, []);
-
-  /**
-   * Анализ аудио для определения речи (VAD)
-   * Возвращает уровень энергии аудио сигнала
-   */
-  const analyzeAudioEnergy = useCallback((): number => {
-    if (!vadAnalyserRef.current) {
-      console.log('⚠️ VAD анализатор недоступен');
-      return 0;
-    }
-
-    const bufferLength = vadAnalyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    vadAnalyserRef.current.getByteFrequencyData(dataArray);
-
-    // Вычисляем RMS (Root Mean Square) для определения громкости
-    let sum = 0;
-    for (let i = 0; i < bufferLength; i++) {
-      const normalized = dataArray[i] / 255.0;
-      sum += normalized * normalized;
-    }
-
-    const rms = Math.sqrt(sum / bufferLength);
-    console.log('🎚️ Уровень громкости:', (rms * 100).toFixed(1) + '%');
-    return rms;
-  }, []);
-
-  /**
-   * Обработка аудио буфера - отправка на транскрибацию
-   * Вызывается автоматически когда обнаружена пауза после речи
-   */
-  const processAudioBuffer = useCallback(async () => {
-    const { audioBuffer, speechStartTime, isBlockedByTTS } = vadStateRef.current;
-    
-    // Проверяем, есть ли что обрабатывать
-    if (audioBuffer.length === 0) {
-      console.log('⚠️ Аудио буфер пустой, пропускаем обработку');
-      return;
-    }
-    
-    // Проверяем минимальную длительность речи
-    const speechDuration = Date.now() - speechStartTime;
-    if (speechDuration < VAD_MIN_SPEECH_DURATION) {
-      console.log(`⚠️ Речь слишком короткая (${speechDuration}ms), пропускаем`);
-      vadStateRef.current.audioBuffer = [];
-      return;
-    }
-    
-    // Проверяем блокировку TTS
-    if (isBlockedByTTS) {
-      console.log('🔇 Отправка заблокирована - TTS воспроизводится, пропускаем');
-      vadStateRef.current.audioBuffer = [];
-      return;
-    }
-    
-    // Проверяем, не обрабатывается ли уже запрос
-    if (isProcessingLLMRef.current) {
-      console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем');
-      vadStateRef.current.audioBuffer = [];
-      return;
-    }
-    
-    // Проверяем наличие функций
-    if (!transcribeWithOpenAIRef.current || !sendToLLMRef.current || !speakTextRef.current) {
-      console.warn('⚠️ Функции еще не инициализированы, пропускаем');
-      return;
-    }
-    
-    console.log(`🎯 Обработка аудио буфера (${audioBuffer.length} chunks, ${speechDuration}ms)`);
-    
-    // Создаем blob из буфера
-    const audioBlob = new Blob(audioBuffer, { type: 'audio/webm' });
-    vadStateRef.current.audioBuffer = [];
-    
-    // Устанавливаем флаг обработки
-    isProcessingLLMRef.current = true;
-    setIsTranscribing(true);
-    
-    try {
-      // Транскрибируем через OpenAI Whisper
-      const transcript = await transcribeWithOpenAIRef.current(audioBlob);
-      
-      if (transcript && transcript.trim()) {
-        console.log('✅ Автоматическая транскрипция:', transcript);
-        
-        // Проверяем дублирование
-        if (transcript === lastProcessedTranscriptRef.current) {
-          console.log('⚠️ Дублирование транскрипции, пропускаем');
-          isProcessingLLMRef.current = false;
-          setIsTranscribing(false);
-          return;
-        }
-        
-        lastProcessedTranscriptRef.current = transcript;
-        
-        // Останавливаем текущий TTS если он играет
-        if (isSpeaking && stopCurrentTTSRef.current) {
-          console.log('🛑 Останавливаем TTS перед новым запросом');
-          stopCurrentTTSRef.current();
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        // Отправляем в LLM
-        const llmResponse = await sendToLLMRef.current(transcript);
-        
-        if (llmResponse && llmResponse.trim()) {
-          // Озвучиваем ответ
-          await speakTextRef.current(llmResponse);
-          
-          // Проверяем завершение урока
-          const isLessonFinished = checkIfLessonFinished(llmResponse);
-          if (isLessonFinished) {
-            console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
-            setTimeout(() => navigateRef.current('/courses'), 2000);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('❌ Ошибка обработки аудио буфера:', error);
-    } finally {
-      isProcessingLLMRef.current = false;
-      setIsTranscribing(false);
-    }
-  }, [isSpeaking]);
-
-  /**
-   * VAD цикл - непрерывный анализ аудио для автоматического определения речи
-   * Работает в фоне и автоматически отправляет речь на обработку
-   */
-  const vadAnalysisLoop = useCallback(() => {
-    if (!isContinuousRecordingRef.current) return;
-    
-    const energy = analyzeAudioEnergy();
-    const now = Date.now();
-    const { isSpeaking: wasSpeaking, lastSoundTime, silenceStartTime, speechStartTime } = vadStateRef.current;
-    
-    // Определяем, идет ли речь сейчас
-    const isSpeaking = energy > VAD_ENERGY_THRESHOLD;
-    
-    if (isSpeaking) {
-      // Обнаружена речь
-      vadStateRef.current.lastSoundTime = now;
-      
-      if (!wasSpeaking) {
-        // Начало новой речи
-        console.log('🎤 Обнаружено начало речи');
-        vadStateRef.current.isSpeaking = true;
-        vadStateRef.current.speechStartTime = now;
-        vadStateRef.current.silenceStartTime = 0;
-      }
-    } else {
-      // Тишина
-      if (wasSpeaking) {
-        // Только что закончилась речь
-        vadStateRef.current.isSpeaking = false;
-        vadStateRef.current.silenceStartTime = now;
-        console.log('🔇 Обнаружено окончание речи, ожидаем паузу...');
-      } else if (silenceStartTime > 0) {
-        // Продолжается тишина после речи
-        const silenceDuration = now - silenceStartTime;
-        
-        // Если тишина достаточно длинная - обрабатываем буфер
-        if (silenceDuration >= VAD_SILENCE_DURATION) {
-          console.log(`✅ Пауза ${silenceDuration}ms - обрабатываем речь`);
-          vadStateRef.current.silenceStartTime = 0;
-          
-          // Асинхронно обрабатываем буфер
-          processAudioBuffer().catch(error => {
-            console.error('❌ Ошибка в processAudioBuffer:', error);
-          });
-        }
-      }
-    }
-  }, [analyzeAudioEnergy, processAudioBuffer]);
-
-  /**
-   * Запуск continuous recording с автоматическим VAD
-   * Главная функция для Android устройств
-   */
-  const startContinuousRecording = useCallback(async (): Promise<boolean> => {
-    try {
-      console.log('🎙️ Запуск continuous recording с автоматическим VAD...');
-      
-      // Получаем доступ к микрофону
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('MediaDevices API недоступен');
-      }
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
-      });
-      
-      mediaStreamRef.current = stream;
-      
-      // Инициализируем VAD AudioContext
-      await initializeVADAudioContext(stream);
-      
-      // Создаем MediaRecorder - предпочитаем совместимые форматы для OpenAI Whisper
-      const mimeType =
-        MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
-        MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
-        MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
-        'audio/mp4';
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
-      
-      // Сбрасываем состояние VAD
-      vadStateRef.current = {
-        isSpeaking: false,
-        speechStartTime: 0,
-        lastSoundTime: 0,
-        silenceStartTime: 0,
-        audioBuffer: [],
-        isBlockedByTTS: false
-      };
-      
-      // Обработчик получения аудио данных
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && isContinuousRecordingRef.current) {
-          vadStateRef.current.audioBuffer.push(event.data);
-          
-          // Ограничиваем размер буфера (защита от переполнения)
-          if (vadStateRef.current.audioBuffer.length > 300) { // ~30 секунд
-            console.log('⚠️ Буфер переполнен, очищаем старые chunks');
-            vadStateRef.current.audioBuffer = vadStateRef.current.audioBuffer.slice(-200);
-          }
-        }
-      };
-      
-      mediaRecorder.onerror = (event) => {
-        console.error('❌ MediaRecorder ошибка:', event);
-      };
-      
-      // Запускаем запись
-      mediaRecorder.start(RECORDING_CHUNK_SIZE);
-      isContinuousRecordingRef.current = true;
-      
-      // Запускаем VAD анализ
-      vadAnalysisIntervalRef.current = setInterval(vadAnalysisLoop, VAD_ANALYSIS_INTERVAL);
-      
-      console.log('✅ Continuous recording запущен с VAD');
-      return true;
-      
-    } catch (error) {
-      console.error('❌ Ошибка запуска continuous recording:', error);
-      toast({
-        title: "Ошибка микрофона",
-        description: "Не удалось получить доступ к микрофону",
-        variant: "destructive"
-      });
-      return false;
-    }
-  }, [initializeVADAudioContext, vadAnalysisLoop, toast]);
-
-  /**
-   * Остановка continuous recording
-   */
-  const stopContinuousRecording = useCallback(() => {
-    console.log('🛑 Остановка continuous recording...');
-    
-    // Останавливаем VAD анализ
-    if (vadAnalysisIntervalRef.current) {
-      clearInterval(vadAnalysisIntervalRef.current);
-      vadAnalysisIntervalRef.current = null;
-    }
-    
-    // Останавливаем запись
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (e) {
-        console.warn('⚠️ Ошибка остановки MediaRecorder:', e);
-      }
-    }
-    
-    // Останавливаем микрофон
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-    
-    // Очищаем VAD AudioContext
-    if (vadMicSourceRef.current) {
-      vadMicSourceRef.current.disconnect();
-      vadMicSourceRef.current = null;
-    }
-    
-    if (vadAudioContextRef.current) {
-      vadAudioContextRef.current.close();
-      vadAudioContextRef.current = null;
-    }
-    
-    // Сбрасываем флаги
-    isContinuousRecordingRef.current = false;
-    vadStateRef.current.audioBuffer = [];
-    
-    console.log('✅ Continuous recording остановлен');
-  }, []);
-
-  // Check if Web Speech API is available
-  const isWebSpeechAvailable = useCallback(() => {
-    const SpeechRecognition = window.SpeechRecognition ||
-      (window as any).webkitSpeechRecognition ||
-      (window as any).mozSpeechRecognition;
-    return !!SpeechRecognition;
-  }, []);
-
-  // Transcribe audio using OpenAI Whisper API (fallback for browsers without Web Speech API)
-  const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
-    try {
-      console.log('🎤 Начинаем транскрибацию через OpenAI Whisper...');
-      console.log('📊 Параметры аудио:', {
-        size: audioBlob.size + ' bytes',
-        type: audioBlob.type,
-        estimatedDuration: Math.round(audioBlob.size / 32000) + ' сек'
-      });
-      setIsTranscribing(true);
-
-      console.log('📝 Подготовка FormData для отправки...');
-      const formData = new FormData();
-      formData.append('audio', audioBlob, 'recording.webm');
-
-      console.log('🌐 Отправка запроса на /transcribe...');
-      const response = await fetch(`${API_URL}/transcribe`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData
-      });
-
-      console.log('🌐 Получен ответ от сервера транскрибации:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type')
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        console.error('❌ Ответ сервера не OK:', response.status, response.statusText, errorData);
-        throw new Error(errorData.error || 'Transcription failed');
-      }
-
-      const data = await response.json();
-      console.log('✅ Транскрибация завершена успешно:', {
-        text: data.text,
-        language: data.language,
-        textLength: data.text?.length || 0
-      });
-      return data.text || null;
-    } catch (error) {
-      console.error('❌ Ошибка транскрибации:', error);
-      console.error('❌ Детали ошибки:', {
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        apiUrl: API_URL,
-        hasToken: !!token
-      });
-      toast({
-        title: "Ошибка распознавания",
-        description: "Не удалось распознать речь. Попробуйте еще раз.",
-        variant: "destructive"
-      });
-      return null;
-    } finally {
-      setIsTranscribing(false);
-    }
-  }, [token, toast]);
-
-  // Start fallback recording (MediaRecorder + OpenAI Whisper)
-  const startFallbackRecording = useCallback(async () => {
-    try {
-      console.log('🎤 Запуск fallback записи (MediaRecorder)...');
-
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        toast({
-          title: "Микрофон недоступен",
-          description: "Ваш браузер не поддерживает запись аудио.",
-          variant: "destructive"
-        });
-        return false;
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType:
-          MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
-          MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
-          MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
-          'audio/mp4'
-      });
-      mediaRecorderRef.current = mediaRecorder;
-
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.start(100); // Collect data every 100ms
-      console.log('✅ Fallback запись начата');
-      return true;
-    } catch (error) {
-      console.error('❌ Ошибка запуска fallback записи:', error);
-      toast({
-        title: "Ошибка микрофона",
-        description: "Не удалось получить доступ к микрофону.",
-        variant: "destructive"
-      });
-      return false;
-    }
-  }, [toast]);
-
-  // Stop fallback recording and transcribe
-  const stopFallbackRecording = useCallback(async () => {
-    return new Promise<string | null>((resolve) => {
-      if (!mediaRecorderRef.current) {
-        resolve(null);
-        return;
-      }
-
-      mediaRecorderRef.current.onstop = async () => {
-        console.log('🛑 Fallback запись остановлена, chunks:', audioChunksRef.current.length);
-
-        // Stop all tracks
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-        }
-
-        if (audioChunksRef.current.length === 0) {
-          resolve(null);
-          return;
-        }
-
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        audioChunksRef.current = [];
-
-        // Transcribe using OpenAI
-        const text = await transcribeWithOpenAI(audioBlob);
-        resolve(text);
-      };
-
-      mediaRecorderRef.current.stop();
-    });
-  }, [transcribeWithOpenAI]);
-
-  // Initialize Web Speech API
-  const initializeSpeechRecognition = useCallback(() => {
-    // На устройствах, требующих fallback (Android), используем MediaRecorder + Whisper
-    if (needsFallbackTranscription()) {
-      console.log('📱 Не Safari браузер - используем OpenAI Whisper для стабильности');
-      setUseFallbackTranscription(true);
-      return null;
-    }
-
-    // Check if Web Speech API is supported (Chrome, Safari, Firefox, Edge)
-    const SpeechRecognition = window.SpeechRecognition ||
-      (window as any).webkitSpeechRecognition ||
-      (window as any).mozSpeechRecognition; // Firefox support
-
-    if (!SpeechRecognition) {
-      console.log('⚠️ Web Speech API не поддерживается, будет использоваться OpenAI Whisper');
-      setUseFallbackTranscription(true);
-      return null;
-    }
-
-    console.log('🎤 Инициализация Web Speech API...');
-    const recognition = new SpeechRecognition();
-
-    // Configure recognition - для десктопа используем continuous mode
-    recognition.continuous = true; // Keep listening continuously
-    recognition.interimResults = true; // Enable interim results to detect speech early
-    recognition.lang = 'ru-RU'; // Russian language
-    recognition.maxAlternatives = 1;
-
-    // Event handlers
-    recognition.onstart = () => {
-      console.log('🎙️ Speech recognition started');
-      console.log('🎙️ Recognition состояние: started');
-      console.log('🎙️ Параметры распознавания:', {
-        continuous: recognition.continuous,
-        interimResults: recognition.interimResults,
-        lang: recognition.lang,
-        maxAlternatives: recognition.maxAlternatives
-      });
-      setIsTranscribing(true);
-    };
-
-    // Disabled barge-in based on VAD/Speech start because of echo issues
-    // recognition.onspeechstart = () => {
-    //   console.log('🎤 Speech started');
-    //   // Мы больше не прерываем TTS здесь, так как это вызывает ложные срабатывания от эха
-    //   // stopAssistantSpeech();
-    // };
-
-    // Добавляем дополнительную проверку на начало речи для фильтрации эха
-    recognition.onaudiostart = () => {
-      // Небольшая задержка чтобы дать системе определить, является ли это эхом
-      setTimeout(() => {
-        if (isPlayingAudioRef.current && speechRecognitionRef.current) {
-          console.log('🔍 Проверяем на эхо при начале аудио...');
-          // Здесь можно добавить дополнительную логику анализа
-        }
-      }, 100);
-    };
-
-    recognition.onresult = async (event) => {
-      // Don't process if mic is disabled
-      if (!isMicEnabled) {
-        console.log('🎤 Микрофон отключен, игнорируем результат');
-        return;
-      }
-
-      const result = event.results[event.results.length - 1]; // Get the last result
-
-      // Обрабатываем interim результаты
-      if (!result.isFinal) {
-        const interimTranscript = result[0].transcript.trim();
-        console.log('👤 Interim распознанный текст:', interimTranscript);
-
-        // Для десктопа (не Android) - обрабатываем стабильные interim результаты
-        if (interimTranscript && !needsFallbackTranscription()) {
-          scheduleInterimProcessing(interimTranscript);
-        }
-      }
-
-      // Обрабатываем финальные результаты
-      if (result.isFinal) {
-        const transcript = result[0].transcript.trim();
-        console.log('👤 Финальный распознанный текст:', transcript);
-
-        // Отменяем таймер interim обработки, так как получили финальный результат
-        resetInterimTimer();
-
-        if (transcript) {
-          // Проверяем на дублирование транскрипции
-          if (transcript === lastProcessedTranscriptRef.current) {
-            console.log('⚠️ Дублирование транскрипции обнаружено, пропускаем:', transcript);
-            return;
-          }
-
-          // Проверяем, не обрабатывается ли уже запрос
-          if (isProcessingLLMRef.current) {
-            console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем');
-            return;
-          }
-
-          isProcessingLLMRef.current = true;
-          lastProcessedTranscriptRef.current = transcript;
-
-          // Stop any current TTS
-          if (isSpeaking) {
-            console.log('🎤 Останавливаю TTS...');
-            stopCurrentTTS();
-          }
-
-          // Save current transcript for context
-          lastTranscriptRef.current = transcript;
-
-          // Send to LLM and get response
-          const llmResponse = await sendToLLM(transcript);
-
-          // Перезапускаем распознавание сразу после отправки в LLM
-          // (не ждем ответа, чтобы пользователь мог продолжать говорить)
-          if (speechRecognitionRef.current && isRecording) {
-            const restartDelay = isSafari() ? 300 : 500; // Safari быстрее восстанавливается
-            setTimeout(() => {
-              try {
-                if (speechRecognitionRef.current && isRecording) {
-                  speechRecognitionRef.current.start();
-                  console.log(`▶️ Перезапуск распознавания после отправки в LLM${isSafari() ? ' (Safari)' : ''}`);
-                }
-              } catch (e: any) {
-                if (e.name !== 'InvalidStateError') {
-                  console.warn('⚠️ Ошибка перезапуска распознавания:', e);
-                }
-              }
-            }, restartDelay);
-          }
-
-          // Проверяем, не пустой ли ответ (означает прерывание)
-          if (!llmResponse) {
-            console.log('🛑 Ответ от LLM пустой - генерация была прервана');
-            isProcessingLLMRef.current = false;
-            return;
-          }
-
-
-          // Small delay to ensure previous TTS is fully stopped
-          await new Promise(resolve => setTimeout(resolve, 100));
-
-          // Speak the response (only if not empty)
-          if (llmResponse && llmResponse.trim()) {
-            await speakText(llmResponse);
-
-            // Проверяем, не завершился ли урок
-            const isLessonFinished = checkIfLessonFinished(llmResponse);
-            if (isLessonFinished) {
-              console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
-              setTimeout(() => {
-                navigate('/courses');
-              }, 2000); // Даем время дослушать финальное сообщение
-            }
-          } else {
-            console.warn('⚠️ Пропускаем озвучивание пустого ответа');
-          }
-
-          isProcessingLLMRef.current = false;
-          console.log('✅ Ответ озвучен');
-        }
-      }
-    };
-
-    recognition.onerror = (event) => {
-      console.error('❌ Speech recognition error:', event.error);
-      setIsTranscribing(false);
-      
-      // Игнорируем не критичные ошибки и перезапускаем
-      const nonCriticalErrors = ['no-speech', 'aborted', 'audio-capture'];
-      if (nonCriticalErrors.includes(event.error) && isRecording) {
-        console.log('ℹ️ Не критичная ошибка, перезапускаем распознавание...');
-        setTimeout(() => {
-          if (speechRecognitionRef.current && isRecording) {
-            try {
-              speechRecognitionRef.current.start();
-              console.log('✅ Перезапуск после ошибки:', event.error);
-            } catch (e: any) {
-              if (e.name !== 'InvalidStateError') {
-                console.warn('⚠️ Ошибка перезапуска:', e);
-              }
-            }
-          }
-        }, 500);
-      }
-    };
-
-    recognition.onend = () => {
-      console.log('🎙️ Speech recognition ended');
-      setIsTranscribing(false);
-
-      // In continuous mode, onend usually means an error occurred or intentional stop
-      // Restart if we're still in recording state (даже если TTS играет - для прерывания)
-      if (isRecording) {
-        console.log('🔄 Перезапуск после неожиданной остановки...');
-        setTimeout(() => {
-          // Double-check we still want to be recording
-          if (speechRecognitionRef.current && isRecording) {
-            try {
-              speechRecognitionRef.current.start();
-              console.log('✅ Перезапуск успешен');
-            } catch (e: any) {
-              if (e.name !== 'InvalidStateError') {
-                console.error('❌ Ошибка перезапуска:', e);
-              }
-            }
-          }
-        }, 1000); // Longer delay for error recovery
-      }
-    };
-
-    speechRecognitionRef.current = recognition;
-    console.log('✅ Web Speech API инициализирован');
-    return recognition;
-  }, [isRecording, isMicEnabled, isSoundEnabled]);
-
-  // Start speech recognition
-  const startSpeechRecognition = useCallback(() => {
-    if (!speechRecognitionRef.current) {
-      console.log('❌ Speech recognition не инициализирован');
-      return;
-    }
-
-    console.log('🎙️ Попытка запуска распознавания речи...', {
-      isRecording,
-      isTranscribing,
-      recognitionState: speechRecognitionRef.current ? 'exists' : 'null'
-    });
-
-    try {
-      console.log('🎙️ Запуск распознавания речи...');
-      speechRecognitionRef.current.start();
-      console.log('✅ start() вызван успешно');
-    } catch (error: any) {
-      // Handle "already started" error gracefully
-      if (error.name === 'InvalidStateError') {
-        console.log('ℹ️ Распознавание речи уже запущено, продолжаем');
-        return;
-      }
-      console.error('❌ Ошибка запуска speech recognition:', error);
-      console.error('❌ Детали ошибки:', {
-        message: error.message,
-        name: error.name,
-        stack: error.stack
-      });
-      setIsTranscribing(false);
-    }
-  }, [isRecording, isTranscribing]);
-
-  // Start/stop recording
-  const handleStartStopRecording = useCallback(async () => {
-    if (isRecording) {
-      // ========================================
-      // ОСТАНОВКА ЗАПИСИ
-      // ========================================
-      console.log('🛑 Остановка записи...');
-      setIsRecording(false);
-      setIsTranscribing(false);
-
-      // Для Android continuous recording - просто останавливаем
-      if (useFallbackTranscription && isContinuousRecordingRef.current) {
-        stopContinuousRecording();
-        return;
-      }
-
-      // Для старого fallback режима (ручной режим) - не используется больше
-      if (useFallbackTranscription || !isWebSpeechAvailable()) {
-        // Stop fallback recording and transcribe
-        const transcript = await stopFallbackRecording();
-
-        if (transcript && transcript.trim()) {
-          console.log('🎯 Fallback транскрипция:', transcript);
-
-          // Проверяем, не обрабатывается ли уже запрос
-          if (isProcessingLLMRef.current) {
-            console.log('⚠️ Запрос к LLM уже обрабатывается, пропускаем fallback');
-            return;
-          }
-
-          isProcessingLLMRef.current = true;
-
-          // Stop any current TTS
-          stopCurrentTTS();
-
-          // Send to LLM
-          try {
-            const llmResponse = await sendToLLM(transcript);
-            if (llmResponse && llmResponse.trim()) {
-              await speakText(llmResponse);
-
-              // Проверяем, не завершился ли урок
-              const isLessonFinished = checkIfLessonFinished(llmResponse);
-              if (isLessonFinished) {
-                console.log('🎓 Урок завершен! Возвращаемся к списку курсов...');
-                setTimeout(() => {
-                  navigate('/courses');
-                }, 2000); // Даем время дослушать финальное сообщение
-              }
-
-              console.log('✅ Ответ озвучен');
-            } else {
-              console.warn('⚠️ Пропускаем озвучивание пустого ответа');
-            }
-          } catch (error) {
-            console.error('❌ Ошибка обработки ответа:', error);
-          } finally {
-            isProcessingLLMRef.current = false;
-          }
-        }
-      } else {
-        // Web Speech API mode (iOS, Desktop)
-        if (speechRecognitionRef.current) {
-          try {
-            speechRecognitionRef.current.stop();
-          } catch (error) {
-            console.log('Speech recognition already stopped');
-          }
-        }
-      }
-    } else {
-      // ========================================
-      // ЗАПУСК ЗАПИСИ
-      // ========================================
-      
-      // Start recording (only if mic is enabled)
-      if (!isMicEnabled) {
-        toast({
-          title: "Микрофон отключен",
-          description: "Включите микрофон для начала записи",
-          variant: "destructive"
-        });
-        return;
-      }
-
-      console.log('🎤 Запуск записи...');
-
-      // Для Android - запускаем continuous recording с автоматическим VAD
-      if (needsFallbackTranscription()) {
-        console.log('📱 Не Safari браузер - используем continuous recording с OpenAI Whisper');
-        setUseFallbackTranscription(true);
-        
-        const started = await startContinuousRecording();
-        if (started) {
-          setIsRecording(true);
-          console.log('✅ Continuous recording запущен');
-        }
-        return;
-      }
-
-      // Check if Web Speech API is available (iOS, Desktop)
-      if (!isWebSpeechAvailable()) {
-        console.log('🔄 Используется fallback режим (OpenAI Whisper)');
-        setUseFallbackTranscription(true);
-
-        const started = await startFallbackRecording();
-        if (started) {
-          setIsRecording(true);
-          console.log('🎤 Fallback запись начата');
-        }
-        return;
-      }
-
-      try {
-        // Initialize Web Speech API if not already done
-        if (!speechRecognitionRef.current) {
-          const recognition = initializeSpeechRecognition();
-          if (!recognition) {
-            // Fallback to OpenAI Whisper if Web Speech API fails
-            console.log('🔄 Переключение на fallback режим (OpenAI Whisper)');
-            setUseFallbackTranscription(true);
-
-            const started = await startFallbackRecording();
-            if (started) {
-              setIsRecording(true);
-              console.log('🎤 Fallback запись начата');
-            }
-            return;
-          }
-        }
-
-        setIsRecording(true);
-
-        // Start speech recognition
-        startSpeechRecognition();
-
-        console.log('🎤 Запись начата');
-      } catch (error) {
-        console.error('❌ Ошибка запуска записи:', error);
-
-        // Try fallback on error
-        console.log('🔄 Ошибка Web Speech API, переключение на fallback');
-        setUseFallbackTranscription(true);
-
-        const started = await startFallbackRecording();
-        if (started) {
-          setIsRecording(true);
-        }
-      }
-    }
-  }, [
-    isRecording, 
-    isMicEnabled, 
-    useFallbackTranscription,
-    isWebSpeechAvailable,
-    startContinuousRecording,
-    stopContinuousRecording,
-    stopFallbackRecording,
-    startFallbackRecording,
-    initializeSpeechRecognition,
-    startSpeechRecognition,
-    stopCurrentTTS,
-    navigate,
-    toast
-  ]);
-
-  // Toggle microphone
-  const handleToggleMic = useCallback(() => {
-    if (isMicEnabled) {
-      // Disable mic
-      console.log('🎤 Отключение микрофона...');
-      console.log('🎤 Предыдущее состояние - микрофон:', isMicEnabled, 'запись:', isRecording);
-      setIsMicEnabled(false);
-      if (isRecording) {
-        // Stop recording if it's active
-        console.log('🎤 Останавливаем активную запись...');
-        setIsRecording(false);
-        setIsTranscribing(false);
-
-        // Stop Web Speech API if active
-        if (speechRecognitionRef.current) {
-          try {
-            speechRecognitionRef.current.stop();
-            console.log('🎤 Web Speech API остановлен');
-          } catch (error) {
-            console.log('⚠️ Speech recognition already stopped');
-          }
-        }
-
-        // Stop fallback recording if active
-        if (mediaRecorderRef.current) {
-          try {
-            mediaRecorderRef.current.stop();
-            console.log('🎤 MediaRecorder остановлен');
-          } catch (error) {
-            console.log('⚠️ MediaRecorder already stopped');
-          }
-        }
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-          console.log('🎤 MediaStream очищен');
-        }
-      }
-      console.log('🎤 Микрофон отключен');
-      toast({
-        title: "Микрофон отключен",
-        description: "Распознавание речи приостановлено"
-      });
-    } else {
-      // Enable mic
-      console.log('🎤 Включение микрофона...');
-      console.log('🎤 Предыдущее состояние - микрофон:', isMicEnabled, 'запись:', isRecording);
-      setIsMicEnabled(true);
-      console.log('🎤 Микрофон включен');
-      toast({
-        title: "Микрофон включен",
-        description: "Распознавание речи активно"
-      });
-    }
-  }, [isMicEnabled, isRecording, toast]);
-
-  // Toggle sound
-  const handleToggleSound = useCallback(() => {
-    if (isSoundEnabled) {
-      // Disable sound
-      console.log('🔊 Отключение звука...');
-      setIsSoundEnabled(false);
-      toast({
-        title: "Звук отключен",
-        description: "Ответы не будут озвучиваться"
-      });
-    } else {
-      // Enable sound
-      console.log('🔊 Включение звука...');
-      setIsSoundEnabled(true);
-      toast({
-        title: "Звук включен",
-        description: "Ответы будут озвучиваться"
-      });
-    }
-  }, [isSoundEnabled, toast]);
-
-  // Get user profile from API
-  const getUserProfile = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_URL}/profile`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (response.ok) {
-        const profile = await response.json();
-        setUserProfile(profile);
-        console.log('📋 Профиль пользователя загружен:', profile);
-        return profile;
-      }
-    } catch (error) {
-      console.error('❌ Ошибка загрузки профиля:', error);
-    }
-    return null;
-  }, [token]);
-
-  // Get course name from courseId
-  const getCourseName = useCallback(() => {
-    return getCourseDisplayName(courseId || "");
-  }, [courseId]);
-
-  // Send transcribed text to LLM with Julia's system prompt
-  const sendToLLM = useCallback(async (userMessage: string, retryCount: number = 0): Promise<string> => {
-    const MAX_RETRIES = 3; // Увеличили количество попыток
-    const originalMessage = userMessage;
-
-    console.log('🚀 sendToLLM вызвана с сообщением:', `"${userMessage}"`, retryCount > 0 ? `(попытка ${retryCount + 1}/${MAX_RETRIES + 1})` : '');
-    console.log('📏 Длина сообщения:', userMessage.length);
-    console.log('🤖 Используется модель:', VOICE_CHAT_LLM_MODEL);
-
-    setIsGeneratingResponse(true);
-
-    // Захватываем generationId перед асинхронными операциями
-    const startGenId = generationIdRef.current;
-
-    // Индикация долгого ожидания (объявляем перед try для доступа в finally)
-    let longWaitTimeout: NodeJS.Timeout | null = null;
-
-    try {
-      // Индикация долгого ожидания
-      longWaitTimeout = setTimeout(() => {
-        if (isGeneratingResponse && generationIdRef.current === startGenId) {
-          console.log('⏳ LLM запрос занимает больше 5 секунд...');
-          // Можно показать toast с информацией, но не будем раздражать пользователя
-        }
-      }, 5000);
-      console.log('🤖 Отправка сообщения в LLM...');
-
-      // Мониторинг запроса
-      // monitorLLMRequest(userMessage, courseId || 'unknown');
-
-      // Проверка на подозрительное сообщение (для всех попыток, но с разными стратегиями)
-      // if (isSuspiciousMessage(userMessage)) {
-      //   console.warn('⚠️ Обнаружено подозрительное сообщение:', userMessage);
-      //   const safeAlternative = generateSafeAlternative(userMessage);
-
-      //   // Для retry используем более агрессивную замену
-      //   if (retryCount > 0) {
-      //     // Более радикальная замена для повторных попыток
-      //     userMessage = safeAlternative.replace(/работ[а-я]*/gi, 'учимся')
-      //       .replace(/давай/gi, 'скажи')
-      //       .replace(/продолж[а-я]*/gi, 'давай')
-      //       .replace(/начн[а-я]*/gi, 'скажи');
-      //     console.log('🔄 Радикальная замена для retry:', userMessage);
-      //   } else if (safeAlternative !== userMessage) {
-      //     console.log('🔄 Замена на безопасную альтернативу:', safeAlternative);
-      //     userMessage = safeAlternative;
-      //   }
-      // }
-
-      // Для retry попыток добавляем контекст
-      if (retryCount > 0) {
-        const prefixes = [
-          'Пожалуйста, объясни:',
-          'Расскажи мне про:',
-          'Помоги мне с:',
-          'Я хочу узнать:',
-          'Объясни, пожалуйста:'
-        ];
-        const prefix = prefixes[retryCount - 1] || 'Скажи мне:';
-        userMessage = `${prefix} ${userMessage}`;
-        console.log('📝 Добавлен префикс для retry:', userMessage);
-      }
-
-      // Get user profile if not loaded
-      let profile = userProfile;
-      if (!profile) {
-        profile = await getUserProfile();
-      }
-
-      // Get course information
+      // Initial Greeting
       const courseName = getCourseDisplayName(courseId || "");
+      setTimeout(async () => {
+        const greeting = courseName 
+          ? `Здравствуй! Я Юлия, твой учитель по курсу "${courseName}". Чем могу помочь?`
+          : "Здравствуй! Я Юлия, твой ИИ-учитель. Чем могу помочь?";
+        addToConversation('assistant', greeting);
+        await speak(greeting);
+      }, 1000);
 
-      // Build context information
-      const contextInfo = [];
-      if (courseName) {
-        contextInfo.push(`Курс: ${courseName}`);
-      }
-      if (profile) {
-        console.log('📊 Профиль пользователя для LLM:', profile);
-        if (profile.learning_style) {
-          contextInfo.push(`Стиль обучения: ${profile.learning_style}`);
-        }
-        if (profile.difficulty_level) {
-          contextInfo.push(`Уровень сложности: ${profile.difficulty_level}`);
-        }
-        if (profile.interests && profile.interests.length > 0) {
-          contextInfo.push(`Интересы: ${profile.interests.join(', ')}`);
-        }
-      }
+      // Start Timer
+      callTimerRef.current = window.setInterval(() => {
+        setCallDuration(prev => prev + 1);
+      }, 1000);
 
-      const contextString = contextInfo.length > 0 ? `\nКонтекст: ${contextInfo.join('; ')}` : '';
-      const startTime = Date.now();
-
-      if (!token) {
-        console.error('❌ Токен не найден, отмена запроса');
-        toast({
-          title: "Ошибка авторизации",
-          description: "Пожалуйста, войдите в систему заново",
-          variant: "destructive"
-        });
-        return "Ошибка авторизации";
-      }
-
-      console.log('🔑 Token check:', { length: token.length, start: token.substring(0, 10) + '...' });
-
-      // Determine endpoint and body based on courseId
-      let endpoint = `${API_URL}/chat/general`;
-      let body: any = {
-        content: userMessage + contextString, // Server expects 'content'
-        messageType: 'voice' // Mark as voice message so it won't appear in text chat
-      };
-
-      if (courseId && courseId !== 'general') {
-        endpoint = `${API_URL}/chat/${courseId}/message`;
-      }
-
-      // Создаем AbortController для таймаута
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-        console.log('⏱️ Запрос к LLM превысил таймаут (30 секунд)');
-      }, 30000); // 30 секунд таймаут
-
-      let response;
-      try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal // Добавляем сигнал для отмены
-        });
-        clearTimeout(timeoutId);
-      } catch (fetchError: any) {
-        clearTimeout(timeoutId);
-        console.error('❌ Fetch error:', fetchError);
-
-        // Проверяем, была ли это отмена по таймауту
-        if (fetchError.name === 'AbortError') {
-          console.error('⏱️ Запрос к LLM превысил таймаут (30 секунд)');
-          toast({
-            title: "Превышено время ожидания",
-            description: "Ответ от преподавателя занимает слишком много времени. Попробуйте еще раз.",
-            variant: "destructive"
-          });
-
-          // Retry при таймауте
-          if (retryCount < MAX_RETRIES) {
-            console.log(`🔄 Таймаут, повторная попытка ${retryCount + 1}...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            return sendToLLM(originalMessage, retryCount + 1);
-          }
-        } else if (fetchError.message?.includes('Failed to fetch') || fetchError.message?.includes('network')) {
-          // Обработка сетевых ошибок
-          toast({
-            title: "Проблема с соединением",
-            description: "Проверьте интернет-соединение и попробуйте еще раз.",
-            variant: "destructive"
-          });
-        }
-
-        throw fetchError;
-      }
-
-      // Проверяем, не было ли прерывания во время запроса
-      if (generationIdRef.current !== startGenId) {
-        console.log('🛑 Генерация была прервана пользователем во время запроса к LLM');
-        return '';
-      }
-
-      if (!response.ok) {
-        console.error('❌ Server returned error:', response.status, response.statusText);
-        if (response.status === 401) {
-          toast({
-            title: "Ошибка авторизации",
-            description: "Сессия истекла. Пожалуйста, обновите страницу.",
-            variant: "destructive"
-          });
-        }
-        throw new Error(`Failed to get response from LLM: ${response.status}`);
-      }
-
-      const textData = await response.text();
-      // console.log('📥 Raw server response:', textData.substring(0, 500)); 
-
-      let data;
-      try {
-        // Попытка распарсить как обычный JSON
-        data = JSON.parse(textData);
-      } catch (parseError) {
-        // Если не вышло, проверяем, не SSE ли это (Server-Sent Events)
-        if (textData.trim().startsWith('data:')) {
-          console.log('🌊 Обнаружен SSE поток, собираем сообщение...');
-          const lines = textData.split('\n');
-          let fullMessage = '';
-          let messageId = '';
-
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (trimmedLine.startsWith('data: ')) {
-              const jsonStr = trimmedLine.substring(6);
-              try {
-                const chunk = JSON.parse(jsonStr);
-                if (chunk.content) {
-                  fullMessage += chunk.content;
-                }
-                if (chunk.messageId) {
-                  messageId = chunk.messageId;
-                }
-              } catch (e) {
-                // Игнорируем битые чанки
-              }
-            }
-          }
-
-          data = { message: fullMessage, messageId };
-        } else {
-          console.error('❌ JSON Parse Error:', parseError);
-          console.error('❌ Failed content:', textData.substring(0, 200) + '...');
-          throw new Error('Invalid JSON response from server');
-        }
-      }
-
-      console.log('🤖 Ответ от LLM получен (длина):', data.message?.length);
-
-      // Мониторинг ответа
-      // monitorLLMResponse(
-      //   userMessage,
-      //   courseId || 'unknown',
-      //   data.message,
-      //   'msg_' + Date.now(),
-      //   Date.now() - startTime
-      // );
-
-      // Проверка на пустой ответ и retry логика
-      if (!data.message || data.message.trim().length === 0) {
-        console.warn('⚠️ Получен пустой ответ от LLM');
-
-        if (retryCount < MAX_RETRIES) {
-          console.log(`🔄 Запуск повторной попытки ${retryCount + 1}...`);
-          // Экспоненциальная задержка перед повтором
-          const delay = Math.pow(2, retryCount) * 500;
-          await new Promise(resolve => setTimeout(resolve, delay));
-          return sendToLLM(originalMessage, retryCount + 1);
-        } else {
-          console.error('❌ Все попытки получения ответа исчерпаны');
-          // Если все попытки исчерпаны, возвращаем нейтральную фразу
-          return "Извините, я не расслышала. Повторите, пожалуйста.";
-        }
-      }
-
-      // Обучение на успешном ответе (если это был retry)
-      if (retryCount > 0) {
-        console.log('🎓 Обучение: запоминаем успешную альтернативу для:', originalMessage);
-        // updateLearnedAlternatives(originalMessage, userMessage); // Disabled due to type mismatch
-      }
-
-      return data.message;
-    } catch (error: any) {
-      console.error('❌ Ошибка общения с LLM:', error);
-
-      // Улучшенная обработка разных типов ошибок
-      const isTimeout = error.name === 'AbortError' || error.message?.includes('timeout');
-      const isNetworkError = error.message?.includes('Failed to fetch') || 
-                           error.message?.includes('network') ||
-                           error.message?.includes('NetworkError');
-
-      // Retry при ошибке сети или таймауте
-      if ((isTimeout || isNetworkError) && retryCount < MAX_RETRIES) {
-        console.log(`🔄 ${isTimeout ? 'Таймаут' : 'Ошибка сети'}, повторная попытка ${retryCount + 1}...`);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return sendToLLM(originalMessage, retryCount + 1);
-      }
-
-      // Показываем конкретное сообщение об ошибке
-      if (isTimeout) {
-        toast({
-          title: "Превышено время ожидания",
-          description: "Ответ от преподавателя занимает слишком много времени. Попробуйте еще раз.",
-          variant: "destructive"
-        });
-      } else if (isNetworkError) {
-        toast({
-          title: "Проблема с соединением",
-          description: "Проверьте интернет-соединение и попробуйте еще раз.",
-          variant: "destructive"
-        });
-      } else {
-        toast({
-          title: "Ошибка",
-          description: "Не удалось получить ответ от ассистента",
-          variant: "destructive"
-        });
-      }
-
-      return "Извините, произошла ошибка связи. Попробуйте еще раз.";
+    } catch (err: any) {
+      console.error("Start call error:", err);
+      setError(err.message || "Не удалось начать урок");
+      cleanupRecognition();
     } finally {
-      // Очищаем таймаут индикации долгого ожидания
-      if (longWaitTimeout) {
-        clearTimeout(longWaitTimeout);
-      }
-
-      // Сбрасываем флаг только если это был последний активный запрос
-      if (generationIdRef.current === startGenId) {
-        setIsGeneratingResponse(false);
-      }
+      setIsInitializingCall(false);
     }
-  }, [token, courseId, userProfile, toast]);
+  };
 
-  // Speak text using OpenAI TTS
-  const speakText = useCallback(async (text: string, retryCount: number = 0) => {
-    if (!text || !isSoundEnabled) return;
+  const endCall = async () => {
+    stopTTS();
+    cleanupRecognition();
 
-    const MAX_TTS_RETRIES = 2;
+    if (callTimerRef.current) {
+      clearInterval(callTimerRef.current);
+    }
 
-    // Захватываем generationId
-    const startGenId = generationIdRef.current;
+    setIsCallActive(false);
+    setCallDuration(0);
+    setError(null);
+  };
 
-    try {
-      console.log('🔊 Генерация озвучки для:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
-      if (retryCount > 0) {
-        console.log(`🔄 TTS повторная попытка ${retryCount}/${MAX_TTS_RETRIES}`);
-      }
-      
-      isPlayingAudioRef.current = true;
-
-      // Инициализируем прогресс озвучки
-      ttsProgressRef.current = {
-        startTime: Date.now(),
-        text: text,
-        duration: text.length * 60, // Грубая оценка: 60мс на символ
-        words: text.split(' '),
-        currentWordIndex: 0
-      };
-
-      console.log('🌐 Отправка TTS запроса на сервер...');
-      console.log('🌐 TTS параметры:', { textLength: text.length, voice: 'nova', speed: 0.95 });
-
-      const response = await fetch(`${API_URL}/tts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          text,
-          voice: 'nova', // Используем голос nova
-          speed: 0.95 // Скорость речи (0.25 - 4.0)
-        })
-      });
-
-      console.log('🌐 Получен ответ от сервера TTS:', {
-        status: response.status,
-        statusText: response.statusText,
-        contentType: response.headers.get('content-type'),
-        contentLength: response.headers.get('content-length')
-      });
-
-      // Проверяем прерывание
-      if (generationIdRef.current !== startGenId) {
-        console.log('🛑 Озвучка прервана до начала воспроизведения');
-        return;
-      }
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        console.error('❌ TTS error response:', response.status, errorData);
-        
-        // Повторная попытка при ошибке
-        if (retryCount < MAX_TTS_RETRIES) {
-          console.log(`🔄 Повторная попытка TTS через 1 секунду...`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          return speakText(text, retryCount + 1);
-        }
-        
-        throw new Error(`Failed to generate speech: ${response.status} ${errorData.error || ''}`);
-      }
-
-      console.log('📦 Получение аудио blob от сервера...');
-      const audioBlob = await response.blob();
-      console.log('📦 TTS blob получен:', {
-        size: audioBlob.size,
-        type: audioBlob.type,
-        estimatedDuration: audioBlob.size > 0 ? Math.round(audioBlob.size / 32000) + ' сек' : 'неизвестно'
-      });
-
-      console.log('🔗 Создание Audio URL...');
-      const audioUrl = URL.createObjectURL(audioBlob);
-      console.log('🔗 Audio URL создан:', audioUrl.substring(0, 50) + '...');
-
-      console.log('🎵 Создание Audio объекта...');
-      const audio = new Audio(audioUrl);
-      console.log('🎵 Audio объект создан:', {
-        duration: audio.duration || 'неизвестно',
-        readyState: audio.readyState,
-        networkState: audio.networkState
-      });
-
-      currentAudioRef.current = audio;
-
-      // Event handlers
-      audio.oncanplay = () => {
-        console.log('🎵 Audio готово к воспроизведению:', {
-          duration: audio.duration,
-          currentTime: audio.currentTime
-        });
-      };
-
-      audio.onloadstart = () => {
-        console.log('🎵 Начата загрузка аудио');
-      };
-
-      audio.onloadeddata = () => {
-        console.log('🎵 Аудио данные загружены');
-      };
-
-      audio.onerror = (event) => {
-        console.error('❌ Ошибка Audio элемента:', event);
-        console.error('❌ Audio error details:', {
-          code: audio.error?.code,
-          message: audio.error?.message,
-          readyState: audio.readyState,
-          networkState: audio.networkState,
-          src: audio.src ? 'URL создан' : 'URL не создан'
-        });
-        // Сбрасываем состояние
-        isPlayingAudioRef.current = false;
-        setIsSpeaking(false);
-        ttsProgressRef.current = null;
-        URL.revokeObjectURL(audioUrl);
-        currentAudioRef.current = null;
-      };
-
-      audio.onplay = () => {
-        console.log('🔊 Озвучка начата');
-        // Устанавливаем isSpeaking = true только когда аудио реально начинает играть
-        setIsSpeaking(true);
-        console.log('🔘 isSpeaking установлен в true - видео должно запуститься');
-        
-        // Блокируем VAD для Android continuous recording
-        setVADBlockedByTTS(true);
-        
-        // Останавливаем распознавание во время TTS для ВСЕХ браузеров
-        // Safari тоже может иметь конфликты микрофона с аудио выводом
-        const shouldStop = speechRecognitionRef.current;
-        console.log('🔍 Проверка остановки SR:', {
-          isSafari: isSafari(),
-          hasSpeechRecognition: !!speechRecognitionRef.current,
-          shouldStop
-        });
-
-        if (shouldStop) {
-          try {
-            console.log('⏸️ Останавливаем распознавание на время TTS');
-            speechRecognitionRef.current.stop();
-          } catch (e) {
-            console.warn('⚠️ Ошибка остановки распознавания:', e);
-          }
-        }
-      };
-
-      audio.onended = () => {
-        console.log('✅ Озвучка завершена успешно');
-        console.log('🧹 Очистка ресурсов после воспроизведения...');
-
-        URL.revokeObjectURL(audioUrl);
-        currentAudioRef.current = null;
-        isPlayingAudioRef.current = false;
-        setIsSpeaking(false);
-
-        // Сбрасываем прогресс озвучки
-        ttsProgressRef.current = null;
-
-        console.log('🔓 Разблокировка VAD после завершения TTS');
-        // Разблокируем VAD для Android continuous recording
-        setVADBlockedByTTS(false);
-
-        // Перезапускаем распознавание после TTS для ВСЕХ браузеров
-        // Увеличиваем задержку для Safari, чтобы избежать конфликтов
-        if (speechRecognitionRef.current && isRecording) {
-          const restartDelay = isSafari() ? 800 : 500; // Safari нуждается в большей задержке
-          console.log(`⏰ Планируем перезапуск распознавания через ${restartDelay}ms`);
-          setTimeout(() => {
-            try {
-              console.log(`▶️ Перезапускаем распознавание после TTS${isSafari() ? ' (Safari)' : ''}`);
-              speechRecognitionRef.current?.start();
-            } catch (e: any) {
-              if (e.name !== 'InvalidStateError') {
-                console.warn('⚠️ Ошибка перезапуска распознавания:', e);
-              }
-            }
-          }, restartDelay);
+  const toggleMute = () => {
+    if (isMuted) {
+      setIsMuted(false);
+      startRecognition();
         } else {
-          console.log('⚠️ Распознавание не перезапущено - либо не активно, либо не инициализировано');
-        }
-      };
-
-      audio.onerror = (event) => {
-        console.error('❌ Ошибка воспроизведения аудио:', event);
-        URL.revokeObjectURL(audioUrl);
-        currentAudioRef.current = null;
-        isPlayingAudioRef.current = false;
-        setIsSpeaking(false);
-        
-        // Сбрасываем прогресс озвучки
-        ttsProgressRef.current = null;
-
-        // Разблокируем VAD для Android continuous recording
-        setVADBlockedByTTS(false);
-
-        // Перезапускаем распознавание после ошибки для ВСЕХ браузеров
-        if (speechRecognitionRef.current && isRecording) {
-          const restartDelay = isSafari() ? 800 : 500;
-          setTimeout(() => {
-            try {
-              console.log(`▶️ Перезапускаем распознавание после ошибки${isSafari() ? ' (Safari)' : ''}`);
-              speechRecognitionRef.current?.start();
-            } catch (e: any) {
-              if (e.name !== 'InvalidStateError') {
-                console.warn('⚠️ Ошибка перезапуска:', e);
-              }
-            }
-          }, restartDelay);
-        }
-        
-        toast({
-          title: "Ошибка озвучки",
-          description: "Не удалось воспроизвести аудио",
-          variant: "destructive"
-        });
-      };
-
-      // Проверяем прерывание перед воспроизведением
-      if (generationIdRef.current !== startGenId) {
-        console.log('🛑 Озвучка прервана перед play()');
-        return;
-      }
-
-      console.log('▶️ Попытка воспроизведения аудио...');
-      await audio.play();
-      console.log('✅ audio.play() выполнен успешно');
-
-    } catch (error) {
-      console.error('❌ Ошибка TTS:', error);
-      console.error('❌ Полная информация об ошибке:', {
-        message: error.message,
-        name: error.name,
-        stack: error.stack
-      });
-
-      // Проверяем, была ли озвучка прервана (generationId изменился)
-      const wasInterrupted = generationIdRef.current !== startGenId;
-      const audioWasStopped = !currentAudioRef.current || currentAudioRef.current.paused;
-      const isPlaybackError = error.name === 'NotAllowedError' || error.name === 'AbortError' ||
-                             error.message?.includes('play') || error.message?.includes('paused');
-
-      console.log('🔍 TTS error analysis:', {
-        wasInterrupted,
-        audioWasStopped,
-        isPlaybackError,
-        retryCount,
-        currentGenId: generationIdRef.current,
-        startGenId,
-        error: error.message,
-        errorName: error.name,
-        hasAudioElement: !!currentAudioRef.current,
-        audioState: currentAudioRef.current ? {
-          paused: currentAudioRef.current.paused,
-          ended: currentAudioRef.current.ended,
-          readyState: currentAudioRef.current.readyState,
-          error: currentAudioRef.current.error
-        } : null
-      });
-
-      setIsSpeaking(false);
-      isPlayingAudioRef.current = false;
-      ttsProgressRef.current = null;
-
-      // Показываем уведомление только если это реальная ошибка TTS, а не прерывание
-      if (retryCount === 0 && !wasInterrupted && !audioWasStopped && !isPlaybackError) {
-        toast({
-          title: "Озвучка временно недоступна",
-          description: "Ассистент ответит текстом. Вы можете продолжать разговор.",
-          variant: "default"
-        });
-      } else if (wasInterrupted || audioWasStopped || isPlaybackError) {
-        console.log('✅ TTS прервана пользователем или возникла ошибка воспроизведения - уведомление не показывается');
-      }
+      setIsMuted(true);
+      stopRecognition();
     }
-  }, [token, isSoundEnabled, toast, isRecording]);
+  };
 
-  // Function to start automatic recording after interruption (with timeout or silence detection)
-  const startInterruptionRecording = useCallback(async (): Promise<void> => {
-    try {
-      console.log('🎤 Запуск автоматической записи после прерывания...');
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  };
 
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        console.error('❌ MediaDevices API недоступен');
-        return;
-      }
-
-      // Get microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
-
-      mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-
-      // Choose optimal audio format
-      const mimeType =
-        MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' :
-        MediaRecorder.isTypeSupported('audio/mpeg') ? 'audio/mpeg' :
-        MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' :
-        'audio/mp4';
-
-      console.log('🎵 Используемый MIME тип:', mimeType);
-
-      // Create MediaRecorder
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = mediaRecorder;
-
-      // Handle data collection
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-          console.log('📦 Записан аудио чанк, размер:', event.data.size);
-        }
-      };
-
-      // Handle recording stop
-      mediaRecorder.onstop = async () => {
-        console.log('🛑 Автоматическая запись остановлена, чанков:', audioChunksRef.current.length);
-
-        // Stop all tracks
-        if (mediaStreamRef.current) {
-          mediaStreamRef.current.getTracks().forEach(track => track.stop());
-          mediaStreamRef.current = null;
-        }
-
-        // Process the recording
-        await processInterruptionRecording();
-      };
-
-      // Start recording
-      mediaRecorder.start(100); // Collect data every 100ms
-      console.log('✅ Автоматическая запись начата');
-
-      // Set timeout for automatic stop (15 seconds max)
-      const recordingTimeout = setTimeout(() => {
-        console.log('⏰ Таймер истек - останавливаем автоматическую запись');
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop();
-        }
-      }, 15000); // 15 seconds max recording time
-
-      // Store timeout reference for cleanup
-      (window as any).interruptionRecordingTimeout = recordingTimeout;
-
-      // Also set up silence detection using basic volume analysis
-      let silenceStartTime = Date.now();
-      const SILENCE_THRESHOLD = 0.01; // Adjust based on testing
-      const SILENCE_DURATION = 2000; // 2 seconds of silence
-
-      // Create audio context for volume monitoring
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const analyser = audioContext.createAnalyser();
-      const microphone = audioContext.createMediaStreamSource(stream);
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-      analyser.fftSize = 256;
-      microphone.connect(analyser);
-
-      const checkSilence = () => {
-        if (!mediaRecorderRef.current || mediaRecorderRef.current.state !== 'recording') {
-          return; // Recording already stopped
-        }
-
-        analyser.getByteFrequencyData(dataArray);
-
-        // Calculate average volume
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          sum += dataArray[i];
-        }
-        const average = sum / dataArray.length / 255; // Normalize to 0-1
-
-        if (average < SILENCE_THRESHOLD) {
-          // Silence detected
-          if (Date.now() - silenceStartTime > SILENCE_DURATION) {
-            console.log('🔇 Обнаружена тишина - останавливаем запись');
-            if (mediaRecorderRef.current) {
-              mediaRecorderRef.current.stop();
-            }
-            return;
-          }
-        } else {
-          // Sound detected, reset silence timer
-          silenceStartTime = Date.now();
-        }
-
-        // Continue checking
-        requestAnimationFrame(checkSilence);
-      };
-
-      // Start silence detection
-      requestAnimationFrame(checkSilence);
-
-    } catch (error) {
-      console.error('❌ Ошибка запуска автоматической записи после прерывания:', error);
-    }
-  }, []);
-
-  // Function to process recording after interruption
-  const processInterruptionRecording = useCallback(async (): Promise<void> => {
-    try {
-      // Clear timeout if it exists
-      if ((window as any).interruptionRecordingTimeout) {
-        clearTimeout((window as any).interruptionRecordingTimeout);
-        (window as any).interruptionRecordingTimeout = null;
-      }
-
-      console.log('🎯 Обрабатываем запись после прерывания...');
-
-      // Check if we have audio data
-      if (!audioChunksRef.current || audioChunksRef.current.length === 0) {
-        console.log('⚠️ Нет аудио данных для обработки после прерывания');
-        return;
-      }
-
-      // Create audio blob
-      const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
-      const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-      audioChunksRef.current = [];
-
-      console.log('📦 Создан audio blob для транскрибации:', {
-        size: audioBlob.size,
-        type: audioBlob.type
-      });
-
-      // Transcribe using OpenAI
-      const transcript = await transcribeWithOpenAI(audioBlob);
-
-      if (transcript && transcript.trim()) {
-        console.log('🎯 Транскрипция после прерывания:', transcript);
-
-        // Check if LLM is already processing
-        if (isProcessingLLMRef.current) {
-          console.log('⚠️ LLM уже обрабатывает запрос, пропускаем транскрибацию после прерывания');
-          return;
-        }
-
-        isProcessingLLMRef.current = true;
-
-        // Stop any current TTS
-        stopCurrentTTS();
-
-        // Send to LLM
-        try {
-          const llmResponse = await sendToLLMRef.current?.(transcript);
-          if (llmResponse && llmResponse.trim()) {
-            await speakTextRef.current?.(llmResponse);
-          }
-        } catch (error) {
-          console.error('❌ Ошибка обработки ответа LLM после прерывания:', error);
-        } finally {
-          isProcessingLLMRef.current = false;
-        }
-      } else {
-        console.log('⚠️ Пустая транскрибация после прерывания');
-      }
-    } catch (error) {
-      console.error('❌ Ошибка обработки записи после прерывания:', error);
-    }
-  }, []);
-
-  // Load user profile on mount
-  useEffect(() => {
-    console.log('🎤 VoiceChat компонент загружен');
-    console.log('🎤 Начальная инициализация аудио системы...');
-    console.log('🎤 Состояние браузера:', {
-      userAgent: navigator.userAgent.substring(0, 100) + '...',
-      isSafari: isSafari(),
-      needsFallback: needsFallbackTranscription(),
-      isMobile: isMobileDevice()
-    });
-
-    getUserProfile();
-  }, [getUserProfile]);
-
-  // Update function refs for VAD (чтобы избежать проблем с порядком объявления)
-  useEffect(() => {
-    transcribeWithOpenAIRef.current = transcribeWithOpenAI;
-    sendToLLMRef.current = sendToLLM;
-    speakTextRef.current = speakText;
-    stopCurrentTTSRef.current = stopCurrentTTS;
-    startFallbackRecordingRef.current = startFallbackRecording;
-    stopFallbackRecordingRef.current = stopFallbackRecording;
-  }, [transcribeWithOpenAI, sendToLLM, speakText, stopCurrentTTS, startFallbackRecording, stopFallbackRecording]);
-
-  // Clean up on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      console.log('🧹 Очистка ресурсов при размонтировании...');
-
-      // Отменяем таймер обработки interim результатов
-      resetInterimTimer();
-
-      // Останавливаем continuous recording
-      if (isContinuousRecordingRef.current) {
-        stopContinuousRecording();
+      stopTTS();
+      cleanupRecognition();
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
       }
-
-      // Останавливаем Speech Recognition
-      if (speechRecognitionRef.current) {
-        try {
-          speechRecognitionRef.current.stop();
-        } catch (e) {
-          console.warn('⚠️ Ошибка остановки Speech Recognition:', e);
-        }
-      }
-
-      // Останавливаем аудио
-      if (currentAudioRef.current) {
-        currentAudioRef.current.pause();
-        currentAudioRef.current = null;
-      }
-
-      // Останавливаем MediaRecorder
-      if (mediaRecorderRef.current) {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch (e) {
-          console.warn('⚠️ Ошибка остановки MediaRecorder:', e);
-        }
-      }
-
-      // Останавливаем микрофон
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-
-      console.log('✅ Ресурсы очищены');
     };
-  }, [stopContinuousRecording, resetInterimTimer]);
+  }, []);
 
-  // Determine Orb state
+  // Orb state
   const orbState = useMemo(() => {
-    if (isSpeaking) return 'speaking';
-    if (isGeneratingResponse) return 'processing';
-    if (isRecording && isTranscribing) return 'listening';
-    if (isRecording) return 'listening';
+    if (isTTSPlaying || isTTSSynthesizing) return 'speaking';
+    if (isAIProcessing) return 'processing';
+    if (isCallActive && !isMuted) return 'listening';
     return 'idle';
-  }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing]);
+  }, [isTTSPlaying, isTTSSynthesizing, isAIProcessing, isCallActive, isMuted]);
 
-  // Determine status text
+  // Status text
   const statusText = useMemo(() => {
-    if (isSpeaking) return 'Говорю...';
-    if (isGeneratingResponse) return 'Думаю...';
-    if (isRecording) {
-      // Для Android continuous recording - всегда "Слушаю..."
-      if (isContinuousRecordingRef.current) {
-        return isTranscribing ? 'Распознаю речь...' : 'Слушаю...';
-      }
-      // Для старого fallback режима (не используется)
-      if (useFallbackTranscription) {
-        return 'Запись... (нажмите снова, чтобы остановить)';
-      }
-      return 'Слушаю...';
-    }
-    // Для Android continuous recording - другой текст
-    if (useFallbackTranscription) {
-      return 'Нажмите на микрофон, чтобы начать';
-    }
-    return 'Нажмите на микрофон, чтобы начать';
-  }, [isSpeaking, isGeneratingResponse, isRecording, isTranscribing, useFallbackTranscription]);
-  
-  // Показываем кнопку прерывания для браузеров кроме Safari во время TTS или генерации
-  const showInterruptButton = (isSpeaking || isGeneratingResponse) && !isSafari();
-  
-  // Отладка состояний аудио системы
-  useEffect(() => {
-    console.log('🎤 Состояние аудио системы изменено:', {
-      isRecording,
-      isTranscribing,
-      isGeneratingResponse,
-      isSpeaking,
-      isMicEnabled,
-      isSoundEnabled,
-      useFallbackTranscription,
-      browser: isSafari() ? 'Safari' : 'Other'
-    });
-  }, [isRecording, isTranscribing, isGeneratingResponse, isSpeaking, isMicEnabled, isSoundEnabled, useFallbackTranscription]);
+    if (isTTSPlaying || isTTSSynthesizing) return 'Говорю...';
+    if (isAIProcessing) return 'Думаю...';
+    if (isCallActive && !isMuted) return 'Слушаю...';
+    if (isCallActive && isMuted) return 'Микрофон выключен';
+    return 'Нажмите, чтобы начать урок';
+  }, [isTTSPlaying, isTTSSynthesizing, isAIProcessing, isCallActive, isMuted]);
 
-  // Отладка кнопки прерывания
-  useEffect(() => {
-    console.log('🔘 Кнопка прерывания:', {
-      showInterruptButton,
-      isSpeaking,
-      isSafari: isSafari()
-    });
-  }, [showInterruptButton, isSpeaking]);
+  const isMobile = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(navigator.userAgent.toLowerCase());
 
   return (
     <div className="relative w-full h-screen bg-background overflow-hidden flex flex-col font-sans">
-      {/* Navigation */}
       <Navigation />
 
-      {/* Course Title */}
-      <div className="absolute top-20 left-0 right-0 z-40 flex justify-center px-4">
-        <div className="bg-background/80 backdrop-blur-sm px-6 py-2 rounded-full border border-border/50 shadow-sm">
-          <span className="text-foreground/70 text-sm md:text-base font-medium">
-            {getCourseName()}
-          </span>
-        </div>
-      </div>
-
-      {/* Main Content */}
       <div className="flex-1 flex flex-col items-center justify-center relative z-10 px-4 pt-16 pb-32 md:pb-24">
         
         {/* Assistant Orb */}
-        <div className="relative flex items-center justify-center mb-12 md:mb-16 scale-90 md:scale-100 transition-transform duration-500">
+        <div className="relative flex items-center justify-center mb-8 md:mb-12 scale-90 md:scale-100 transition-transform duration-500">
           <AssistantOrb state={orbState} />
         </div>
 
         {/* Status */}
-        <div className="flex flex-col items-center space-y-6 text-center max-w-2xl px-4">
-          <div className="text-foreground/80 text-xl md:text-2xl font-light tracking-widest uppercase transition-colors duration-300">
+        <div className="flex flex-col items-center space-y-4 text-center max-w-2xl px-4">
+          <div className="text-foreground/80 text-xl md:text-2xl font-light tracking-widest uppercase animate-pulse transition-colors duration-300">
             {statusText}
           </div>
           
-          {/* Interrupt Button - показывается во время TTS для браузеров кроме Safari */}
-          {showInterruptButton && (
-            <Button
-              variant="outline"
-              size="lg"
-              className="bg-green-500 hover:bg-green-600 text-white border-green-600 hover:border-green-700 shadow-lg animate-in fade-in-0 zoom-in-95 duration-300"
-              onClick={async () => {
-                console.log('🛑 Пользователь нажал кнопку прерывания');
-                stopAssistantSpeech();
+          {isCallActive && (
+            <div className="text-lg font-medium text-primary">
+              {formatDuration(callDuration)}
+            </div>
+          )}
 
-                // После прерывания TTS запускаем транскрибацию через OpenAI для не-Safari браузеров
-                if (!isSafari()) {
-                  console.log('🎤 Запуск однократной записи после прерывания для транскрибации через OpenAI...');
-                  try {
-                    await startInterruptionRecording();
-                  } catch (error) {
-                    console.error('❌ Ошибка запуска записи после прерывания:', error);
-                    toast({
-                      title: "Ошибка записи",
-                      description: "Не удалось начать запись после прерывания",
-                      variant: "destructive"
-                    });
-                  }
-                } else {
-                  // Для Safari перезапускаем Web Speech API
-                  if (speechRecognitionRef.current && isRecording) {
-                    setTimeout(() => {
-                      try {
-                        console.log('▶️ Перезапуск Web Speech API после прерывания (Safari)');
-                        speechRecognitionRef.current?.start();
-                      } catch (e: any) {
-                        if (e.name !== 'InvalidStateError') {
-                          console.warn('⚠️ Ошибка перезапуска Web Speech API:', e);
-                        }
-                      }
-                    }, 300);
-                  }
-                }
-              }}
-            >
-              <span className="font-medium">Прервать</span>
-            </Button>
+          {transcriptionStatus && (
+            <p className="text-sm text-primary/80 animate-pulse">{transcriptionStatus}</p>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          {/* Mobile info */}
+          {!isCallActive && isMobile && (
+            <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-950 rounded-lg border border-blue-200 dark:border-blue-800">
+              <p className="text-sm text-blue-800 dark:text-blue-200">📱 Мобильное устройство обнаружено</p>
+              {isIOS && <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">Оптимизировано для iOS</p>}
+            </div>
+          )}
+
+          {/* Microphone problems */}
+          {isCallActive && !microphoneAccessGranted && (
+            <div className="mt-4 p-4 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-lg">
+              <h3 className="text-sm font-medium mb-2 text-red-800 dark:text-red-200">
+                🚫 Проблема с микрофоном
+              </h3>
+              <p className="text-sm text-red-600 dark:text-red-400 mb-2">
+                {forceOpenAI ? "Используется текстовый режим (OpenAI)" : "Микрофон недоступен. Проверьте разрешения."}
+              </p>
+              <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                <div>📱 iOS: {isIOS ? 'Да' : 'Нет'} | Мобильный: {isMobile ? 'Да' : 'Нет'}</div>
+                <div>🔐 Разрешения: {microphonePermissionStatus}</div>
+              </div>
+            </div>
           )}
         </div>
       </div>
 
       {/* Controls */}
       <div className="absolute bottom-8 left-0 right-0 z-50 flex items-center justify-center space-x-6 md:space-x-12 px-4 pb-safe">
-        {/* Sound Toggle */}
+        
+        {!isCallActive ? (
+          // Start Call Button
         <Button
-          variant="ghost"
-          size="icon"
-          className={`w-12 h-12 md:w-14 md:h-14 rounded-full transition-all duration-300 border ${isSoundEnabled ? 'bg-background border-border text-foreground hover:bg-accent' : 'bg-destructive/10 border-destructive/20 text-destructive hover:bg-destructive/20'}`}
-          onClick={handleToggleSound}
-        >
-          {isSoundEnabled ? <Volume2 className="w-5 h-5 md:w-6 md:h-6" /> : <VolumeX className="w-5 h-5 md:w-6 md:h-6" />}
+            onClick={startCall}
+            disabled={isInitializingCall}
+            size="lg"
+            className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-green-500 hover:bg-green-600 shadow-lg transition-all duration-500 transform hover:scale-105"
+          >
+            {isInitializingCall ? (
+              <Loader2 className="w-8 h-8 md:w-10 md:h-10 animate-spin" />
+            ) : (
+              <Phone className="w-8 h-8 md:w-10 md:h-10" />
+            )}
+          </Button>
+        ) : (
+          // Active Call Controls
+          <>
+            {/* Mute Toggle */}
+            <Button
+              onClick={toggleMute}
+              size="lg"
+              variant={isMuted ? "destructive" : "outline"}
+              className="w-14 h-14 md:w-16 md:h-16 rounded-full p-0"
+            >
+              {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
         </Button>
 
-        {/* Mic Toggle (Main Action) */}
+            {/* Stop TTS Button (when speaking) */}
+            {(isTTSPlaying || isTTSSynthesizing) && (
         <Button
-          variant="default"
-          size="icon"
-          className={`w-16 h-16 md:w-20 md:h-20 rounded-full shadow-lg transition-all duration-500 transform hover:scale-105 ${isRecording
-            ? 'bg-destructive hover:bg-destructive/90 shadow-destructive/20'
-            : 'bg-primary text-primary-foreground hover:bg-primary/90'
-            }`}
-          onClick={handleStartStopRecording}
-        >
-          {isRecording ? (
-            <MicOff className="w-6 h-6 md:w-8 md:h-8" />
-          ) : (
-            <Mic className="w-6 h-6 md:w-8 md:h-8" />
-          )}
-        </Button>
+                onClick={stopTTS}
+                size="lg"
+                variant="destructive"
+                className="w-14 h-14 md:w-16 md:h-16 rounded-full p-0 animate-pulse"
+                title="Прервать"
+              >
+                <Square className="w-6 h-6" />
+              </Button>
+            )}
 
-        {/* End Call (Exit) */}
+            {/* End Call */}
+            <Button
+              onClick={endCall}
+              size="lg"
+              variant="destructive"
+              className="w-14 h-14 md:w-16 md:h-16 rounded-full p-0 shadow-lg"
+            >
+              <PhoneOff className="w-6 h-6" />
+        </Button>
+          </>
+        )}
+      </div>
+
+      {/* Debug Toggle Button */}
+      {isCallActive && (
+        <div className="absolute bottom-28 left-0 right-0 flex justify-center">
         <Button
-          variant="ghost"
-          size="icon"
-          className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 hover:text-destructive transition-all duration-300"
-          onClick={() => navigate(-1)}
-        >
-          <PhoneOff className="w-5 h-5 md:w-6 md:h-6" />
+            onClick={toggleDebugLogs}
+            size="sm"
+            variant="outline"
+            className="flex items-center gap-2 text-xs opacity-50 hover:opacity-100"
+          >
+            <Bug className="w-3 h-3" />
+            {showDebugLogs ? 'Скрыть логи' : 'Показать логи'}
         </Button>
       </div>
+      )}
+
+      {/* Debug Logs Panel */}
+      <DebugLogs
+        logs={debugLogs}
+        isVisible={showDebugLogs}
+        onToggle={toggleDebugLogs}
+        onClear={clearDebugLogs}
+      />
     </div>
   );
 };

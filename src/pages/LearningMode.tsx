@@ -2,10 +2,13 @@ import Navigation from "@/components/Navigation";
 import { MessageSquare, Mic, Sparkles } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useParams, useNavigate } from "react-router-dom";
+import { getCourseDisplayName } from "@/lib/utils";
 
 const LearningMode = () => {
   const { courseId } = useParams();
   const navigate = useNavigate();
+
+  const courseName = getCourseDisplayName(courseId || "");
 
   const modes = [
     {
@@ -43,7 +46,7 @@ const LearningMode = () => {
               Выберите режим обучения
             </h1>
             <p className="text-lg text-muted-foreground">
-              Как вы хотите общаться с AI-преподавателем?
+              Как вы хотите общаться с AI-преподавателем? {courseName}
             </p>
           </div>
 

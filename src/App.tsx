@@ -43,7 +43,7 @@ const App = () => (
             <Route path="/course-start/:subjectId" element={<ProtectedRoute><CourseStart /></ProtectedRoute>} />
             <Route path="/learning-mode/:courseId" element={<ProtectedRoute><LearningMode /></ProtectedRoute>} />
             <Route path="/course-chat/:courseId" element={<ProtectedRoute><CourseChat /></ProtectedRoute>} />
-            <Route path="/voice-chat/:courseId" element={<ProtectedRoute><VoiceChat /></ProtectedRoute>} />
+            <Route path="/voice-chat/:courseId" element={<ProtectedRoute><VoiceChat key={`voice-chat-${Date.now()}`} /></ProtectedRoute>} />
             <Route path="/homework" element={<ProtectedRoute><Homework /></ProtectedRoute>} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

@@ -44,121 +44,29 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 
 // Proxy configuration (enabled by default)
 const PROXY_ENABLED = process.env.PROXY_ENABLED !== 'false';
-const PROXY_HOST = process.env.PROXY_HOST || '185.68.186.158';
+const PROXY_HOST = process.env.PROXY_HOST || '185.68.187.20';
 const PROXY_PORT = process.env.PROXY_PORT || '8000';
-const PROXY_USERNAME = process.env.PROXY_USERNAME || '7BwWCS';
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || 'BBBvb6';
-
-// Helper function for OpenAI API error handling
-async function safeOpenAICall(operation, fallbackMessage = null, isStreaming = false) {
-  try {
-    return await operation();
-  } catch (error) {
-    console.error('❌ OpenAI API Error:', {
-      message: error.message,
-      code: error.code,
-      type: error.type,
-      status: error.status
-    });
-
-    // Handle specific proxy/geo-blocking errors
-    if (error.code === 'unsupported_country_region_territory' ||
-        error.type === 'request_forbidden' ||
-        error.message?.includes('Country, region, or territory not supported')) {
-      console.log('🌍 Geo-blocking detected, attempting proxy bypass...');
-
-      // Try to reinitialize without proxy
-      if (PROXY_ENABLED) {
-        console.log('🔄 Switching to direct OpenAI connection...');
-
-        let directClient;
-        if (isStreaming) {
-          // For streaming, we need to create a new client instance
-          directClient = new OpenAI({
-            apiKey: OPENAI_API_KEY,
-            maxRetries: 3,
-            timeout: 60000
-          });
-        } else {
-          directClient = new OpenAI({
-            apiKey: OPENAI_API_KEY,
-            maxRetries: 3,
-            timeout: 60000
-          });
-        }
-
-        try {
-          // Retry the operation without proxy using direct client
-          return await operation(directClient);
-        } catch (directError) {
-          console.error('❌ Direct connection also failed:', directError.message);
-          throw directError;
-        }
-      }
-    }
-
-    // For streaming, we can't provide a simple fallback
-    if (isStreaming) {
-      throw error;
-    }
-
-    // If fallback message provided, return it
-    if (fallbackMessage) {
-      console.log('💬 Returning fallback message:', fallbackMessage);
-      return {
-        choices: [{
-          message: { content: fallbackMessage },
-          finish_reason: 'fallback'
-        }]
-      };
-    }
-
-    throw error;
-  }
-}
+const PROXY_USERNAME = process.env.PROXY_USERNAME || 'rBD9e6';
+const PROXY_PASSWORD = process.env.PROXY_PASSWORD || 'jZdUnJ';
 
 // Initialize OpenAI client
 let openai = null;
 if (OPENAI_API_KEY) {
-  console.log('🔧 Настройка OpenAI клиента...');
-  console.log('📊 PROXY_ENABLED:', PROXY_ENABLED);
-  console.log('🌐 PROXY_HOST:', PROXY_HOST);
-  console.log('🔌 PROXY_PORT:', PROXY_PORT);
-
   if (PROXY_ENABLED) {
-    try {
-      const proxyUrl = `http://${PROXY_USERNAME}:${PROXY_PASSWORD}@${PROXY_HOST}:${PROXY_PORT}`;
-      console.log('🔗 Прокси URL:', proxyUrl.replace(/:([^:@]{4})[^:@]*@/, ':****@')); // Hide password in logs
+    const proxyUrl = `http://${PROXY_USERNAME}:${PROXY_PASSWORD}@${PROXY_HOST}:${PROXY_PORT}`;
+    const proxyAgent = new HttpsProxyAgent(proxyUrl);
 
-      const proxyAgent = new HttpsProxyAgent(proxyUrl);
-
-      openai = new OpenAI({
-        apiKey: OPENAI_API_KEY,
-        httpAgent: proxyAgent,
-        maxRetries: 3,
-        timeout: 60000 // 60 seconds timeout
-      });
-
-      console.log('✅ OpenAI клиент инициализирован с прокси:', `${PROXY_HOST}:${PROXY_PORT}`);
-    } catch (proxyError) {
-      console.error('❌ Ошибка настройки прокси:', proxyError.message);
-      console.log('⚠️ Переключение на прямое подключение к OpenAI...');
-
-      openai = new OpenAI({
-        apiKey: OPENAI_API_KEY,
-        maxRetries: 3,
-        timeout: 60000
-      });
-
-      console.log('✅ OpenAI клиент инициализирован без прокси (fallback)');
-    }
-  } else {
     openai = new OpenAI({
       apiKey: OPENAI_API_KEY,
-      maxRetries: 3,
-      timeout: 60000
+      httpAgent: proxyAgent
     });
-    console.log('✅ OpenAI клиент инициализирован без прокси');
+
+    console.log('🤖 OpenAI клиент инициализирован с прокси:', `${PROXY_HOST}:${PROXY_PORT}`);
+  } else {
+    openai = new OpenAI({
+      apiKey: OPENAI_API_KEY
+    });
+    console.log('🤖 OpenAI клиент инициализирован без прокси');
   }
 } else {
   console.log('⚠️ OpenAI API ключ не найден');
@@ -177,6 +85,11 @@ app.use(cors({
 
     // Allow localhost origins for development
     if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+
+    // Allow ngrok domains for HTTPS development
+    if (origin && origin.includes('.ngrok-free.app')) {
       return callback(null, true);
     }
 
@@ -435,36 +348,18 @@ app.get('/api/courses', authenticateToken, (req, res) => {
   try {
     const userId = req.user.userId;
     const courses = db.prepare(`
-      SELECT 
-        uc.id, uc.subject_id, uc.subject_name, uc.grade, uc.goal, uc.goal_name, uc.icon, 
-        uc.progress, uc.next_lesson, uc.created_at,
-        ulp.subject_mastery_percentage, ulp.next_lesson_recommendations
-      FROM user_courses uc
-      LEFT JOIN user_learning_profiles ulp ON uc.id = ulp.course_id
-      WHERE uc.user_id = ?
-      ORDER BY uc.updated_at DESC
+      SELECT id, subject_id, subject_name, grade, goal, goal_name, icon, progress, next_lesson, created_at
+      FROM user_courses
+      WHERE user_id = ?
+      ORDER BY updated_at DESC
     `).all(userId);
 
     console.log(`📚 Получение курсов для пользователя ${userId}: найдено ${courses.length} курсов`);
-    
-    // Map courses to use real data from learning profile if available
-    const mappedCourses = courses.map(course => {
-      const realProgress = course.subject_mastery_percentage !== null ? Math.round(course.subject_mastery_percentage) : course.progress;
-      const realNextLesson = course.next_lesson_recommendations || course.next_lesson;
-      
-      console.log(`  - ${course.id}: ${course.subject_name}, Progress: ${realProgress}% (DB: ${course.progress}%), Next: ${realNextLesson}`);
-      
-      return {
-        ...course,
-        progress: realProgress,
-        next_lesson: realNextLesson,
-        // Remove internal fields
-        subject_mastery_percentage: undefined,
-        next_lesson_recommendations: undefined
-      };
+    courses.forEach(course => {
+      console.log(`  - ${course.id}: ${course.subject_name} (${course.goal_name || 'без цели'})`);
     });
 
-    res.json({ courses: mappedCourses });
+    res.json({ courses });
   } catch (error) {
     console.error('Get courses error:', error);
     res.status(500).json({ error: 'Ошибка сервера' });
@@ -697,19 +592,17 @@ function generateVoiceChatPrompt(courseId, userProfile, learningProfile, pending
 5. Не сыпь множеством вопросов подряд - это сбивает с толку
 6. Следи за временем - урок должен уложиться в 5 минут
 7. Поощряй успехи ученика и давай позитивную обратную связь
-8. НИКОГДА не используй эмодзи, смайлики и специальные символы - только слова и знаки препинания
+8. Используй эмодзи для дружелюбного общения 📚✨
 9. Отвечай на русском языке
 10. Адаптируй материал под уровень и интересы ученика
 11. В конце каждого урока обязательно давай домашнее задание
-12. Пиши текст который легко читать вслух для TTS - избегай аббревиатур, пиши числа словами
 
 СТИЛЬ ОТВЕТОВ:
 - Пиши естественно, без форматирования и заголовков
-- Не используй markdown, курсив, списки с номерами, скобки
+- Не используй markdown (**текст**), курсив, списки с номерами
 - Не указывай явно "ТЕОРИЯ", "ПРАКТИКА", "РЕФЛЕКСИЯ" - просто веди разговор
 - Делай ответы краткими и подходящими для голосового общения
 - Переходи плавно от одного этапа урока к другому
-- Пиши полные слова, не сокращай (например "и так далее" вместо "и т.д.")
 
 ОБРАБОТКА ПРЕРВАННЫХ РАЗГОВОРОВ:
 - Если пользователь прервал озвучку вопроса, учти предыдущий контекст и продолжи урок
@@ -1145,16 +1038,13 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
       try {
         console.log('🎤 Voice chat запрос в OpenAI (без стриминга)...');
         console.log('📝 Сообщения для voice chat:', JSON.stringify(messages, null, 2));
-        const completion = await safeOpenAICall(
-          () => openai.chat.completions.create({
-            model: 'gpt-4o',
-            messages,
-            temperature,
-            max_completion_tokens: 200,
-            stream: false
-          }),
-          generateFallbackResponse(content, courseId)
-        );
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages,
+          temperature,
+          max_completion_tokens: 200,
+          stream: false
+        });
 
         const fullResponse = completion.choices[0]?.message?.content || '';
         const tokensUsed = completion.usage?.total_tokens || 0;
@@ -1197,12 +1087,6 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Send transcribed text for voice messages
-    if (messageType === 'voice') {
-      console.log('📝 Отправка транскрибированного текста:', content);
-      res.write(`data: ${JSON.stringify({ transcribedText: content })}\n\n`);
-    }
-
     // Call OpenAI with streaming
     console.log('🚀 Отправка запроса в OpenAI API (stream)...');
     console.log('📝 Сообщения для OpenAI:', JSON.stringify(messages, null, 2));
@@ -1211,21 +1095,13 @@ app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res)
     let tokensUsed = 0;
 
     try {
-      const stream = await safeOpenAICall(
-        () => openai.chat.completions.create({
-          model: 'gpt-4o',
-          messages,
-          temperature,
-          max_completion_tokens: 2000,
-          stream: true
-        }),
-        null, // No fallback for streaming
-        true // Indicate this is streaming
-      );
-
-      if (!stream) {
-        throw new Error('Streaming not available, falling back to non-streaming');
-      }
+      const stream = await openai.chat.completions.create({
+        model: 'gpt-5.1',
+        messages,
+        temperature,
+        max_completion_tokens: 2000,
+        stream: true
+      });
       console.log('✅ OpenAI API ответил успешно');
 
       for await (const chunk of stream) {
@@ -1510,17 +1386,16 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
 4. Не сыпь множеством вопросов подряд - это сбивает с толку
 5. Следи за временем - урок должен уложиться в 5 минут
 6. Поощряй успехи ученика и давай позитивную обратную связь
-7. НИКОГДА не используй эмодзи, смайлики и специальные символы - только слова и знаки препинания
+7. Используй эмодзи для дружелюбного общения 📚✨
 8. Отвечай на русском языке
-9. Помогай с любыми темами: математика, программирование, языки, история, наука и так далее
-10. Пиши текст который легко читать вслух - избегай аббревиатур, пиши числа словами
+9. Помогай с любыми темами: математика, программирование, языки, история, наука и т.д.
+10. Для МАТЕМАТИЧЕСКИХ ФОРМУЛ используй LaTeX синтаксис в $...$ для строчных формул и $$...$$ для выносных формул
 
 СТИЛЬ ОТВЕТОВ:
 - Пиши естественно, без форматирования и заголовков
-- Не используй markdown, курсив, списки с номерами, скобки
+- Не используй markdown (**текст**), курсив, списки с номерами
 - Делай ответы краткими и подходящими для голосового общения
 - Переходи плавно от одного этапа урока к другому
-- Пиши полные слова, не сокращай (например "и так далее" вместо "и т.д.")
 
 Ты можешь помогать с:
 - Решением задач и упражнений
@@ -1546,16 +1421,13 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
     }
 
     console.log('🚀 Отправка запроса в OpenAI API...');
-    const completion = await safeOpenAICall(
-      () => openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages,
-        temperature: 0.7,
-        max_completion_tokens: 1000,
-        stream: false
-      }),
-      'Привет! Я Юлия, твой AI-учитель. Я могу помочь тебе с изучением любых предметов: математика, программирование, языки, науки и многое другое. Что тебя интересует сегодня?'
-    );
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-5.1',
+      messages,
+      temperature: 0.7,
+      max_completion_tokens: 1000,
+      stream: false
+    });
 
     const fullResponse = completion.choices[0]?.message?.content || 'Извини, я не смогла сформулировать ответ. Попробуй перефразировать вопрос.';
     const tokensUsed = completion.usage?.total_tokens || 0;
@@ -1576,9 +1448,9 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
       // Save AI response
       const aiMessageId = uuidv4();
       db.prepare(`
-        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type, tokens_used)
-        VALUES (?, ?, ?, 'assistant', ?, ?, ?)
-      `).run(aiMessageId, userId, 'general', fullResponse, 'text', tokensUsed);
+        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
+        VALUES (?, ?, ?, 'assistant', ?, 'text')
+      `).run(aiMessageId, userId, 'general', fullResponse, tokensUsed);
 
       console.log('✅ Сообщения сохранены в БД');
     } catch (dbError) {
@@ -1588,8 +1460,7 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
 
     return res.json({
       message: fullResponse,
-      tokensUsed,
-      ...(messageType === 'voice' && { transcribedText: content })
+      tokensUsed
     });
 
   } catch (error) {
@@ -1704,117 +1575,13 @@ app.put('/api/profile', authenticateToken, (req, res) => {
 
 // ==================== TTS API ====================
 
-// Prepare text for TTS - convert formulas, numbers, symbols to readable text
-app.post('/api/tts/prepare', authenticateToken, async (req, res) => {
-  try {
-    console.log('📝 === ПОСТУПИЛ ЗАПРОС НА /api/tts/prepare ===');
-    
-    const { text } = req.body;
-    
-    if (!text || !text.trim()) {
-      return res.status(400).json({ error: 'Текст не предоставлен' });
-    }
-
-    if (!openai) {
-      console.log('⚠️ OpenAI client not initialized, returning original text');
-      return res.json({ preparedText: text });
-    }
-
-    console.log('📝 Оригинальный текст:', text.substring(0, 200) + (text.length > 200 ? '...' : ''));
-
-    // Use LLM to convert text to TTS-friendly format
-    const completion = await safeOpenAICall(
-      () => openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: `Ты - помощник для подготовки текста к озвучке. Твоя задача - преобразовать текст так, чтобы его было легко читать вслух для TTS системы, СОХРАНЯЯ грамматику, склонения и падежи.
-
-КРИТИЧЕСКИ ВАЖНО - СОХРАНЕНИЕ ГРАММАТИКИ:
-- ВСЕГДА учитывай контекст предложения при преобразовании
-- Сохраняй правильные падежи и склонения
-- Числа и формулы должны согласовываться с окружающими словами
-- Примеры правильного преобразования:
-  * "В 1917 году" → "В тысяча девятьсот семнадцатом году" (родительный падеж)
-  * "Петр I правил" → "Петр Первый правил" (именительный падеж)
-  * "При Петре I" → "При Петре Первом" (предложный падеж)
-  * "x равен 5" → "икс равен пяти" (дательный падеж)
-  * "x больше 3" → "икс больше трёх" (родительный падеж)
-  * "2 ученика" → "два ученика" (именительный падеж)
-  * "5 учеников" → "пять учеников" (родительный падеж)
-  * "к 3 задачам" → "к трём задачам" (дательный падеж)
-
-ПРАВИЛА ПРЕОБРАЗОВАНИЯ:
-1. Замени все математические формулы на их словесное описание на русском языке, УЧИТЫВАЯ КОНТЕКСТ
-   - "x² + 2x = 0" → "икс в квадрате плюс два икс равно нулю"
-   - "x = 5" → "икс равен пяти" (дательный падеж)
-   - "x > 3" → "икс больше трёх" (родительный падеж)
-   - "$\\frac{1}{2}$" → "одна вторая" (согласование с контекстом)
-   - "√16" → "квадратный корень из шестнадцати"
-   - "∑" → "сумма"
-   - "∫" → "интеграл"
-   - "π" → "пи"
-   - "α, β, γ" → "альфа, бета, гамма"
-
-2. Замени все числа на слова, СОГЛАСУЯ С ПАДЕЖОМ И КОНТЕКСТОМ
-   - "5" → "пять" (именительный) или "пяти" (родительный/дательный) в зависимости от контекста
-   - "В 1917 году" → "В тысяча девятьсот семнадцатом году" (предложный падеж)
-   - "1917 год" → "тысяча девятьсот семнадцатый год" (именительный падеж)
-   - "3.14" → "три целых четырнадцать сотых"
-   - "2 раза" → "два раза" (именительный)
-   - "2 раза" → "два раза" (винительный)
-   - "около 5" → "около пяти" (родительный)
-
-3. Убери все эмодзи и специальные символы
-   - 📚✨ → убрать полностью
-   - → → "переходит к" или убрать
-   - ** ** → убрать (markdown)
-
-4. Расшифруй аббревиатуры
-   - "т.д." → "так далее"
-   - "т.е." → "то есть"
-   - "и т.п." → "и тому подобное"
-
-5. Сохрани естественность речи, пунктуацию и ВСЕ грамматические формы
-
-6. НЕ добавляй ничего нового, только преобразуй существующий текст
-
-7. ВСЕГДА анализируй контекст перед преобразованием чисел и формул
-
-Верни ТОЛЬКО преобразованный текст, без пояснений.`
-        },
-        {
-          role: 'user',
-          content: text
-        }
-      ],
-      max_tokens: 2000,
-      temperature: 0.4  // Немного увеличено для лучшего понимания контекста и грамматики
-    }),
-    text // fallback to original text
-    );
-
-    const preparedText = completion.choices[0]?.message?.content?.trim() || text;
-    
-    console.log('✅ Подготовленный текст:', preparedText.substring(0, 200) + (preparedText.length > 200 ? '...' : ''));
-
-    res.json({ preparedText });
-
-  } catch (error) {
-    console.error('❌ Ошибка подготовки текста для TTS:', error);
-    // В случае ошибки возвращаем оригинальный текст
-    res.json({ preparedText: req.body.text || '' });
-  }
-});
-
 // Generate speech using OpenAI TTS
 app.post('/api/tts', authenticateToken, async (req, res) => {
   try {
     console.log('🔊 === ПОСТУПИЛ ЗАПРОС НА /api/tts ===');
     console.log('TTS request received at', new Date().toISOString());
 
-    const { text, voice = 'nova', speed = 0.95 } = req.body; // Nova - лучший голос для образовательного контента
+    const { text, voice = 'nova' } = req.body; // Nova - лучший голос для образовательного контента
 
     if (!text || !text.trim()) {
       console.error('❌ No text provided');
@@ -1843,7 +1610,7 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
         voice: voice, // Options: alloy, echo, fable, onyx, nova, shimmer
         input: text.trim(),
         response_format: "mp3",
-        speed: speed  // Скорость речи (0.25 - 4.0), по умолчанию 0.9
+        speed: 1.0  // Обычная скорость для комфортного прослушивания
       }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error('TTS timeout after 25 seconds')), 25000)
@@ -1864,32 +1631,13 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
     res.send(buffer);
 
   } catch (error) {
-    console.error('❌ TTS ERROR ===');
     console.error('TTS error details:', {
       message: error.message,
       stack: error.stack,
       name: error.name,
       code: error.code,
-      status: error.status,
-      response: error.response?.data
+      status: error.status
     });
-
-    // Проверяем на специфические ошибки OpenAI
-    if (error.code === 'insufficient_quota') {
-      console.error('💳 Недостаточно квоты на OpenAI API');
-      return res.status(500).json({
-        error: 'Недостаточно квоты OpenAI API',
-        details: 'Пожалуйста, проверьте баланс вашего аккаунта OpenAI'
-      });
-    }
-
-    if (error.code === 'invalid_api_key') {
-      console.error('🔑 Неверный API ключ OpenAI');
-      return res.status(500).json({
-        error: 'Неверный API ключ OpenAI',
-        details: 'Пожалуйста, проверьте ваш OPENAI_API_KEY'
-      });
-    }
 
     res.status(500).json({
       error: 'Ошибка при генерации речи',
@@ -1996,17 +1744,6 @@ app.post('/api/transcribe', (req, res, next) => {
       details: error.message
     });
   }
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    database: 'configured',
-    openai: OPENAI_API_KEY ? 'configured' : 'not configured',
-    proxy: PROXY_ENABLED ? 'enabled' : 'disabled'
-  });
 });
 
 app.listen(PORT, () => {
