@@ -1,8 +1,3 @@
-import OpenAI from 'openai';
-
-const apiKey = import.meta.env.VITE_OPENAI_API_KEY || import.meta.env.OPENAI_API_KEY;
-
-// API endpoints configuration
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 // Retry configuration
@@ -69,10 +64,6 @@ async function withRetry<T>(
   throw lastError;
 }
 
-if (!apiKey) {
-  console.warn('OpenAI API key is not defined. Please set VITE_OPENAI_API_KEY in your environment.');
-}
-
 // Use backend API endpoints instead of direct OpenAI calls
 console.log('OpenAI service initialized - using backend API endpoints');
 
@@ -124,41 +115,47 @@ class TeacherAI {
   }
 
   async getResponse(messages: ChatMessage[], memoryContext = ''): Promise<string> {
-    try {
-      const conversation = [
-        { role: 'system' as const, content: this.systemPrompt },
-        ...(memoryContext ? [{ role: 'system' as const, content: `Контекст: ${memoryContext}` }] : []),
-        ...messages.slice(-10),
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: conversation,
-        max_tokens: 500,
-        temperature: 0.7,
+    return withRetry(async () => {
+      const token = localStorage.getItem('token');
+      
+      const response = await fetch(`${API_BASE_URL}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          messages,
+          memoryContext,
+          systemPrompt: this.systemPrompt,
+          fastMode: false
+        })
       });
 
-      const response = completion.choices[0]?.message?.content;
-      if (!response) throw new Error('No response from OpenAI');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Chat request failed');
+      }
 
-      return response;
-    } catch (error) {
-      console.error('Error getting AI response:', error);
-      return 'Извините, я временно недоступна. Повторите ваш вопрос через минуту.';
-    }
+      const data = await response.json();
+      if (!data.message) throw new Error('No response from backend');
+
+      return data.message;
+    }, "getResponse");
   }
 
   async transcribeAudio(audioBlob: Blob): Promise<string> {
     console.log(`[OpenAI] Transcribe via backend: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
 
     return withRetry(async () => {
+      const token = localStorage.getItem('token');
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
 
       const response = await fetch(`${API_BASE_URL}/transcribe`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${token}`
         },
         body: formData
       });
@@ -181,11 +178,12 @@ class TeacherAI {
 
   async getVoiceResponse(messages: ChatMessage[], memoryContext = '', fastMode = false): Promise<string> {
     return withRetry(async () => {
+      const token = localStorage.getItem('token');
       const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           messages,
@@ -214,12 +212,13 @@ class TeacherAI {
   async synthesizeSpeech(text: string, options: { model?: string; voice?: string; format?: string } = {}): Promise<ArrayBuffer> {
     return withRetry(async () => {
       console.log(`[TTS] Synthesizing via backend: "${text.substring(0, 50)}..."`);
+      const token = localStorage.getItem('token');
 
       const response = await fetch(`${API_BASE_URL}/speech`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
           text,
