@@ -2,6 +2,9 @@ import OpenAI from 'openai';
 
 const apiKey = import.meta.env.VITE_OPENAI_API_KEY || import.meta.env.OPENAI_API_KEY;
 
+// API endpoints configuration
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
 // Retry configuration
 const RETRY_CONFIG = {
   maxRetries: 3,
@@ -70,12 +73,8 @@ if (!apiKey) {
   console.warn('OpenAI API key is not defined. Please set VITE_OPENAI_API_KEY in your environment.');
 }
 
-const openai = new OpenAI({
-  apiKey,
-  dangerouslyAllowBrowser: true,
-});
-
-export { openai };
+// Use backend API endpoints instead of direct OpenAI calls
+console.log('OpenAI service initialized - using backend API endpoints');
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -150,94 +149,91 @@ class TeacherAI {
   }
 
   async transcribeAudio(audioBlob: Blob): Promise<string> {
-    console.log(`[OpenAI] Transcribe: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
+    console.log(`[OpenAI] Transcribe via backend: ${audioBlob.size} bytes, type: ${audioBlob.type}`);
 
     return withRetry(async () => {
-      let extension = "webm";
-      if (audioBlob.type.includes("mp4") || audioBlob.type.includes("aac") || audioBlob.type.includes("m4a")) {
-        extension = "m4a";
-      } else if (audioBlob.type.includes("wav")) {
-        extension = "wav";
-      } else if (audioBlob.type.includes("mpeg") || audioBlob.type.includes("mp3")) {
-        extension = "mp3";
-      } else if (audioBlob.type.includes("ogg")) {
-        extension = "ogg";
-      }
+      const formData = new FormData();
+      formData.append('audio', audioBlob, 'recording.webm');
 
-      const file = new File([audioBlob], `voice.${extension}`, { type: audioBlob.type || "audio/webm" });
-
-      const transcription = await openai.audio.transcriptions.create({
-        file,
-        model: "whisper-1",
-        response_format: "text",
-        language: "ru",
-        prompt: "Урок с учителем. Короткие фразы: Привет, Да, Нет, Понял, Хорошо.",
-        temperature: 0.2,
+      const response = await fetch(`${API_BASE_URL}/transcribe`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: formData
       });
 
-      if (!transcription) throw new Error("Empty transcription result");
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Transcription failed');
+      }
 
-      const text = typeof transcription === "string" ? transcription : ((transcription as { text?: string })?.text ?? "");
-      if (!text.trim()) throw new Error("Empty transcription result");
+      const data = await response.json();
+      console.log('✅ Transcription result:', data.text);
 
-      return text;
+      if (!data.text || !data.text.trim()) {
+        throw new Error("Empty transcription result");
+      }
+
+      return data.text.trim();
     }, "transcribeAudio");
   }
 
   async getVoiceResponse(messages: ChatMessage[], memoryContext = '', fastMode = false): Promise<string> {
     return withRetry(async () => {
-      let systemMessages: { role: 'system'; content: string }[] = [
-        { role: "system" as const, content: this.systemPrompt }
-      ];
-
-      if (memoryContext && memoryContext.trim().length > 0) {
-        systemMessages.push({
-          role: 'system' as const,
-          content: `КОНТЕКСТ УРОКА:\n${memoryContext}\n\nИспользуй эту информацию для персонализированных объяснений.`
-        });
-      }
-
-      const conversation = [
-        ...systemMessages,
-        ...messages.slice(-10),
-      ];
-
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: conversation,
-        max_tokens: fastMode ? 300 : 500,
-        temperature: fastMode ? 0.5 : 0.6,
+      const response = await fetch(`${API_BASE_URL}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          messages,
+          memoryContext,
+          fastMode,
+          systemPrompt: this.systemPrompt
+        })
       });
 
-      const response = completion.choices[0]?.message?.content;
-      if (!response) throw new Error("No response from OpenAI (voice mode)");
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Chat request failed');
+      }
 
-      return response;
+      const data = await response.json();
+      console.log('✅ Chat response:', data.message?.substring(0, 50) + '...');
+
+      if (!data.message) {
+        throw new Error("Empty chat response");
+      }
+
+      return data.message;
     }, "getVoiceResponse");
   }
 
   async synthesizeSpeech(text: string, options: { model?: string; voice?: string; format?: string } = {}): Promise<ArrayBuffer> {
-    const defaultOptions = {
-      model: "tts-1",
-      voice: "nova",
-      response_format: "mp3",
-      speed: 1.0,
-    };
-
-    const finalOptions = { ...defaultOptions, ...options };
-
     return withRetry(async () => {
-      console.log(`[TTS] Synthesizing: "${text.substring(0, 50)}..."`);
+      console.log(`[TTS] Synthesizing via backend: "${text.substring(0, 50)}..."`);
 
-      const response = await openai.audio.speech.create({
-        model: finalOptions.model,
-        voice: finalOptions.voice as any,
-        input: text,
-        response_format: finalOptions.response_format as any,
-        speed: finalOptions.speed,
+      const response = await fetch(`${API_BASE_URL}/speech`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          text,
+          ...options
+        })
       });
 
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Speech synthesis failed');
+      }
+
       const arrayBuffer = await response.arrayBuffer();
+      console.log(`[TTS] Speech synthesized successfully, buffer size: ${arrayBuffer.byteLength} bytes`);
 
       if (arrayBuffer.byteLength === 0) {
         throw new Error("Received empty audio buffer");

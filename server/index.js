@@ -1746,6 +1746,105 @@ app.post('/api/transcribe', (req, res, next) => {
   }
 });
 
+// Chat endpoint for voice conversations
+app.post('/api/chat', authenticateToken, async (req, res) => {
+  try {
+    console.log('💬 === ПОСТУПИЛ ЗАПРОС НА /api/chat ===');
+
+    if (!openai) {
+      return res.status(500).json({ error: 'OpenAI API недоступен' });
+    }
+
+    const { messages, memoryContext, fastMode, systemPrompt } = req.body;
+
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Messages array required' });
+    }
+
+    // Create system messages
+    let systemMessages = [{ role: 'system', content: systemPrompt || 'You are a helpful AI assistant.' }];
+
+    if (memoryContext && memoryContext.trim().length > 0) {
+      systemMessages.push({
+        role: 'system',
+        content: `КОНТЕКСТ УРОКА:\n${memoryContext}\n\nИспользуй эту информацию для персонализированных объяснений.`
+      });
+    }
+
+    const conversation = [
+      ...systemMessages,
+      ...messages.slice(-10)
+    ];
+
+    console.log('🤖 Sending chat request to OpenAI...');
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: conversation,
+      max_tokens: fastMode ? 300 : 500,
+      temperature: fastMode ? 0.5 : 0.6,
+    });
+
+    const response = completion.choices[0]?.message?.content;
+
+    if (!response) {
+      return res.status(500).json({ error: 'No response from OpenAI' });
+    }
+
+    console.log('✅ Chat response generated successfully');
+    res.json({ message: response });
+
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({
+      error: 'Ошибка при генерации ответа',
+      details: error.message
+    });
+  }
+});
+
+// Speech synthesis endpoint
+app.post('/api/speech', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔊 === ПОСТУПИЛ ЗАПРОС НА /api/speech ===');
+
+    if (!openai) {
+      return res.status(500).json({ error: 'OpenAI API недоступен' });
+    }
+
+    const { text, model = 'tts-1', voice = 'nova', response_format = 'mp3', speed = 1.0 } = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Text is required' });
+    }
+
+    console.log('🔊 Synthesizing speech:', { textLength: text.length, model, voice, format: response_format });
+
+    const mp3 = await openai.audio.speech.create({
+      model,
+      voice,
+      input: text,
+      response_format,
+      speed
+    });
+
+    const buffer = Buffer.from(await mp3.arrayBuffer());
+
+    console.log('✅ Speech synthesized successfully, size:', buffer.length);
+
+    res.setHeader('Content-Type', `audio/${response_format}`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+
+  } catch (error) {
+    console.error('Speech synthesis error:', error);
+    res.status(500).json({
+      error: 'Ошибка при синтезе речи',
+      details: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Production URL: https://teacher.windexs.ru`);
