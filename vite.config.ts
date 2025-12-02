@@ -12,8 +12,7 @@ export default defineConfig(({ mode }) => ({
     allowedHosts: [
       "127.0.0.1",
       "localhost",
-      "a8bb6552555e.ngrok-free.app",
-      ".ngrok-free.app" // Allow all ngrok free domains
+      "teacher.windexs.ru"
     ],
     proxy: {
       '/api': {

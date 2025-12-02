@@ -72,7 +72,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/history`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -141,14 +141,14 @@ const CourseChat = () => {
         formData.append('messageType', 'voice');
         formData.append('token', token);
 
-        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal
         });
       } else {
         // Handle text message
-        response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -305,7 +305,7 @@ const CourseChat = () => {
       formData.append('messageType', 'voice');
       formData.append('token', token || '');
 
-      const response = await fetch(`http://localhost:4000/api/chat/${courseId}/message`, {
+      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
         method: 'POST',
         body: formData,
         signal: abortControllerRef.current.signal
@@ -479,7 +479,7 @@ const CourseChat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('http://localhost:4000/api/tts', {
+      const response = await fetch('https://teacher.windexs.ru/api/tts', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
