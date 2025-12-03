@@ -1,14 +1,16 @@
 /**
- * useTranscription - Голосовая система с ScriptProcessorNode VAD
+ * useTranscription - Голосовая система с ScriptProcessorNode VAD + TTS Interruption
  * 
  * Архитектура:
  * - iOS/Android: OpenAI Whisper + VAD через ScriptProcessorNode (raw PCM анализ)
  * - Desktop: Browser SpeechRecognition + OpenAI fallback
+ * - TTS Interruption: Определение речи пользователя во время TTS для прерывания
  * 
- * Ключевое отличие:
- * - Анализ громкости через ScriptProcessorNode (работает на iOS!)
- * - MediaRecorder только для записи аудио
+ * Ключевые особенности:
  * - ScriptProcessorNode дает raw PCM данные для анализа в реальном времени
+ * - Адаптивные пороги: выше во время TTS (эхо-защита)
+ * - Confirmation frames: несколько кадров подряд для подтверждения речи
+ * - Debounce: минимум 1 сек между прерываниями
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -23,7 +25,6 @@ interface UseTranscriptionProps {
   addDebugLog?: (message: string) => void;
 }
 
-// Расширяем window для deviceDebugLogged
 declare global {
   interface Window {
     deviceDebugLogged?: boolean;
@@ -67,20 +68,32 @@ export const useTranscription = ({
   const currentVolumeRef = useRef<number>(0);
   const volumeHistoryRef = useRef<number[]>([]);
 
-  // Safari interruption state
+  // TTS Interruption refs
+  const interruptionConfirmFramesRef = useRef(0);
+  const lastInterruptionTimeRef = useRef(0);
+
+  // Safari/Desktop interruption state
   const safariSpeechCountRef = useRef(0);
   const lastSafariSpeechTimeRef = useRef(0);
 
   // === CONSTANTS ===
-  const SAFARI_VOICE_THRESHOLD = 60;
-  const SAFARI_CONFIRMATION_FRAMES = 3;
-  const SAFARI_DEBOUNCE = 1000;
+  
+  // TTS Interruption thresholds
+  const TTS_INTERRUPTION_THRESHOLD = 3.0;     // Порог во время TTS (выше для эхо-защиты)
+  const NORMAL_SPEECH_THRESHOLD = 1.5;        // Порог без TTS (чувствительнее)
+  const INTERRUPTION_CONFIRMATION_FRAMES = 3; // Кадров подряд для подтверждения
+  const INTERRUPTION_DEBOUNCE = 1000;         // 1 сек между прерываниями
 
   // Mobile VAD constants
-  const MOBILE_SPEECH_THRESHOLD = 1.5;    // 1.5% громкости для определения речи
   const MOBILE_SILENCE_DURATION = 1500;   // 1.5 сек тишины для окончания речи
   const MOBILE_MIN_SPEECH_DURATION = 500; // Минимум 500ms речи
   const MOBILE_MIN_AUDIO_SIZE = 5000;     // Минимум 5KB аудио
+
+  // Safari/Desktop constants
+  const SAFARI_VOICE_THRESHOLD = 40;
+  const SAFARI_TTS_THRESHOLD_BOOST = 15;
+  const SAFARI_CONFIRMATION_FRAMES = 3;
+  const SAFARI_DEBOUNCE = 1000;
 
   // === BROWSER DETECTION ===
   const isIOSDevice = useCallback(() => {
@@ -101,6 +114,10 @@ export const useTranscription = ({
 
   const hasEchoProblems = useCallback(() => {
     return /chrome|chromium|edg\/|opera|brave/.test(navigator.userAgent.toLowerCase());
+  }, []);
+
+  const isSafariBrowser = useCallback(() => {
+    return /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
   }, []);
 
   // === HALLUCINATION FILTER ===
@@ -163,6 +180,26 @@ export const useTranscription = ({
     }
   }, [addDebugLog]);
 
+  // === TTS INTERRUPTION HANDLER ===
+  const handleTTSInterruption = useCallback(() => {
+    const now = Date.now();
+    
+    // Проверяем debounce
+    if (now - lastInterruptionTimeRef.current < INTERRUPTION_DEBOUNCE) {
+      addDebugLog(`[Interrupt] ⏳ Debounce active, skipping (${now - lastInterruptionTimeRef.current}ms < ${INTERRUPTION_DEBOUNCE}ms)`);
+            return;
+          }
+
+    lastInterruptionTimeRef.current = now;
+    addDebugLog(`[Interrupt] 🛑 TTS INTERRUPTION TRIGGERED!`);
+    
+    // Вызываем callback прерывания
+    onInterruption?.();
+    
+    // Сбрасываем счетчики
+    interruptionConfirmFramesRef.current = 0;
+  }, [onInterruption, addDebugLog, INTERRUPTION_DEBOUNCE]);
+
   // === OPENAI TRANSCRIPTION ===
   const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
     try {
@@ -221,7 +258,6 @@ export const useTranscription = ({
         addDebugLog(`[MediaRec] ❌ Error: ${event.error?.message || 'Unknown'}`);
       };
 
-      // Записываем непрерывно, chunks каждую секунду
       recorder.start(1000);
       addDebugLog(`[MediaRec] ✅ Started (1s chunks)`);
     } catch (error: any) {
@@ -252,13 +288,12 @@ export const useTranscription = ({
     });
   }, [addDebugLog]);
 
-  // === SCRIPT PROCESSOR VAD (работает на iOS!) ===
+  // === SCRIPT PROCESSOR VAD + TTS INTERRUPTION ===
   const setupScriptProcessorVAD = useCallback((stream: MediaStream) => {
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       audioContextRef.current = new AudioContextClass();
       
-      // Резюмируем контекст (важно для iOS)
       if (audioContextRef.current.state === 'suspended') {
         audioContextRef.current.resume().then(() => {
           addDebugLog(`[VAD] AudioContext resumed`);
@@ -266,36 +301,19 @@ export const useTranscription = ({
       }
 
       const source = audioContextRef.current.createMediaStreamSource(stream);
-      
-      // ScriptProcessorNode дает доступ к raw PCM данным
-      // Используем размер буфера 4096 для баланса между latency и производительностью
       const scriptProcessor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
       scriptProcessorRef.current = scriptProcessor;
 
       let lastLogTime = 0;
-      let frameCount = 0;
-
+      
       scriptProcessor.onaudioprocess = (event) => {
-        // Пропускаем если TTS активен
-        if (isTTSActiveRef.current) {
-          if (speechActiveRef.current) {
-            addDebugLog(`[VAD] 🔇 TTS active - resetting speech state`);
-            speechActiveRef.current = false;
-            silenceStartTimeRef.current = 0;
-            recordedChunksRef.current = [];
-          }
-          return;
-        }
-
-        if (isProcessingRef.current) return;
-
-        frameCount++;
         const now = Date.now();
+        const isTTSActive = isTTSActiveRef.current;
 
         // Получаем raw PCM данные
         const inputData = event.inputBuffer.getChannelData(0);
         
-        // Вычисляем RMS (Root Mean Square) - реальная громкость
+        // Вычисляем RMS
         let sum = 0;
         for (let i = 0; i < inputData.length; i++) {
           sum += inputData[i] * inputData[i];
@@ -303,28 +321,58 @@ export const useTranscription = ({
         const rms = Math.sqrt(sum / inputData.length);
         const volumePercent = rms * 100;
 
-        // Сохраняем текущую громкость
         currentVolumeRef.current = volumePercent;
 
-        // Сохраняем историю громкости (последние 10 значений)
+        // История громкости
         volumeHistoryRef.current.push(volumePercent);
         if (volumeHistoryRef.current.length > 10) {
           volumeHistoryRef.current.shift();
         }
 
-        // Средняя громкость за последние измерения
         const avgVolume = volumeHistoryRef.current.reduce((a, b) => a + b, 0) / volumeHistoryRef.current.length;
 
-        const isSpeaking = avgVolume > MOBILE_SPEECH_THRESHOLD;
+        // === РЕЖИМ TTS INTERRUPTION ===
+        if (isTTSActive) {
+          // Используем повышенный порог во время TTS (эхо-защита)
+          const threshold = TTS_INTERRUPTION_THRESHOLD;
+          const isLoudEnough = avgVolume > threshold;
+
+          // Логируем каждые 500ms во время TTS
+          if (now - lastLogTime >= 500) {
+            addDebugLog(`[Interrupt] 📊 Vol: ${avgVolume.toFixed(2)}% | Threshold: ${threshold}% | Frames: ${interruptionConfirmFramesRef.current}/${INTERRUPTION_CONFIRMATION_FRAMES}`);
+              lastLogTime = now;
+          }
+
+          if (isLoudEnough) {
+            interruptionConfirmFramesRef.current++;
+            
+            // Требуем несколько кадров подряд для подтверждения
+            if (interruptionConfirmFramesRef.current >= INTERRUPTION_CONFIRMATION_FRAMES) {
+              addDebugLog(`[Interrupt] 🎤 User speech detected during TTS! (vol: ${avgVolume.toFixed(2)}%)`);
+              handleTTSInterruption();
+            }
+          } else {
+            // Сбрасываем счетчик если тишина
+            interruptionConfirmFramesRef.current = 0;
+          }
+          
+          // Не записываем речь во время TTS (эхо)
+          return;
+        }
+
+        // === ОБЫЧНЫЙ РЕЖИМ VAD ===
+        if (isProcessingRef.current) return;
+
+        const threshold = NORMAL_SPEECH_THRESHOLD;
+        const isSpeaking = avgVolume > threshold;
 
         // Логируем каждую секунду
-        if (now - lastLogTime >= 1000) {
-          addDebugLog(`[VAD] 📊 Vol: ${avgVolume.toFixed(2)}% (raw: ${volumePercent.toFixed(2)}%) | Speaking: ${isSpeaking} | Active: ${speechActiveRef.current}`);
-          lastLogTime = now;
+            if (now - lastLogTime >= 1000) {
+          addDebugLog(`[VAD] 📊 Vol: ${avgVolume.toFixed(2)}% | Speaking: ${isSpeaking} | Active: ${speechActiveRef.current}`);
+              lastLogTime = now;
         }
 
         if (isSpeaking) {
-          // === ОБНАРУЖЕНА РЕЧЬ ===
           if (!speechActiveRef.current) {
             addDebugLog(`[VAD] 🎤 Speech STARTED (vol: ${avgVolume.toFixed(2)}%)`);
             speechActiveRef.current = true;
@@ -334,7 +382,6 @@ export const useTranscription = ({
           silenceStartTimeRef.current = 0;
           
         } else {
-          // === ТИШИНА ===
           if (speechActiveRef.current) {
             if (!silenceStartTimeRef.current) {
               silenceStartTimeRef.current = now;
@@ -350,20 +397,17 @@ export const useTranscription = ({
               speechActiveRef.current = false;
               silenceStartTimeRef.current = 0;
               
-              // Проверяем минимальную длительность
               if (speechDuration < MOBILE_MIN_SPEECH_DURATION) {
-                addDebugLog(`[VAD] ⚠️ Speech too short (${speechDuration}ms < ${MOBILE_MIN_SPEECH_DURATION}ms)`);
+                addDebugLog(`[VAD] ⚠️ Speech too short (${speechDuration}ms)`);
                 return;
               }
               
-              // Останавливаем запись и отправляем на транскрибацию
               isProcessingRef.current = true;
               
               (async () => {
                 try {
                   const audioBlob = await stopMediaRecording();
                   
-                  // Сразу перезапускаем запись
                   if (audioStreamRef.current) {
                     startMediaRecording(audioStreamRef.current);
                   }
@@ -387,7 +431,6 @@ export const useTranscription = ({
                   }
                 } catch (error: any) {
                   addDebugLog(`[VAD] ❌ Error: ${error.message}`);
-                  // Перезапускаем запись при ошибке
                   if (audioStreamRef.current && !mediaRecorderRef.current) {
                     startMediaRecording(audioStreamRef.current);
                   }
@@ -400,25 +443,28 @@ export const useTranscription = ({
         }
       };
 
-      // Подключаем цепочку
       source.connect(scriptProcessor);
       scriptProcessor.connect(audioContextRef.current.destination);
 
-      addDebugLog(`[VAD] ✅ ScriptProcessor VAD started (buffer: 4096, sampleRate: ${audioContextRef.current.sampleRate})`);
-      
-    } catch (error: any) {
+      addDebugLog(`[VAD] ✅ ScriptProcessor VAD started with TTS Interruption`);
+      addDebugLog(`[VAD] Settings: normal=${NORMAL_SPEECH_THRESHOLD}%, tts=${TTS_INTERRUPTION_THRESHOLD}%, frames=${INTERRUPTION_CONFIRMATION_FRAMES}, debounce=${INTERRUPTION_DEBOUNCE}ms`);
+
+        } catch (error: any) {
       addDebugLog(`[VAD] ❌ Setup failed: ${error.message}`);
     }
   }, [
     isTTSActiveRef,
     onSpeechStart,
     onTranscriptionComplete,
+    handleTTSInterruption,
     stopMediaRecording,
     startMediaRecording,
     transcribeWithOpenAI,
     filterHallucinatedText,
     addDebugLog,
-    MOBILE_SPEECH_THRESHOLD,
+    TTS_INTERRUPTION_THRESHOLD,
+    NORMAL_SPEECH_THRESHOLD,
+    INTERRUPTION_CONFIRMATION_FRAMES,
     MOBILE_SILENCE_DURATION,
     MOBILE_MIN_SPEECH_DURATION,
     MOBILE_MIN_AUDIO_SIZE
@@ -437,9 +483,10 @@ export const useTranscription = ({
     speechActiveRef.current = false;
     silenceStartTimeRef.current = 0;
     volumeHistoryRef.current = [];
+    interruptionConfirmFramesRef.current = 0;
   }, [addDebugLog]);
 
-  // === VOLUME MONITORING FOR DESKTOP ===
+  // === VOLUME MONITORING FOR DESKTOP (Safari TTS Interruption) ===
   const startVolumeMonitoring = useCallback(async (stream: MediaStream) => {
     if (isMobileDevice()) return;
 
@@ -464,18 +511,26 @@ export const useTranscription = ({
         analyser.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
 
+        // Safari/Desktop TTS Interruption logic
         if (!hasEchoProblems()) {
-          const threshold = isTTSActiveRef.current 
-            ? SAFARI_VOICE_THRESHOLD + 15 
+          const isTTSActive = isTTSActiveRef.current;
+          const threshold = isTTSActive 
+            ? SAFARI_VOICE_THRESHOLD + SAFARI_TTS_THRESHOLD_BOOST 
             : SAFARI_VOICE_THRESHOLD;
 
           if (average > threshold) {
             safariSpeechCountRef.current++;
+            
             if (safariSpeechCountRef.current >= SAFARI_CONFIRMATION_FRAMES) {
               const now = Date.now();
               if (now - lastSafariSpeechTimeRef.current > SAFARI_DEBOUNCE) {
+                addDebugLog(`[Safari] 🎤 Voice interruption detected (vol: ${average.toFixed(1)}, threshold: ${threshold})`);
                 lastSafariSpeechTimeRef.current = now;
-                onInterruption?.();
+                
+                if (isTTSActive) {
+                  onInterruption?.();
+                }
+                
                 safariSpeechCountRef.current = 0;
               }
             }
@@ -488,10 +543,11 @@ export const useTranscription = ({
       };
       
       volumeMonitorRef.current = requestAnimationFrame(checkVolume);
+      addDebugLog(`[Volume] ✅ Desktop monitoring started (Safari: ${isSafariBrowser()})`);
     } catch (error: any) {
       addDebugLog(`[Volume] ❌ Failed: ${error.message}`);
     }
-  }, [hasEchoProblems, isMobileDevice, isTTSActiveRef, onInterruption, addDebugLog]);
+  }, [hasEchoProblems, isMobileDevice, isSafariBrowser, isTTSActiveRef, onInterruption, addDebugLog]);
 
   const stopVolumeMonitoring = useCallback(() => {
     if (volumeMonitorRef.current) {
@@ -515,11 +571,11 @@ export const useTranscription = ({
     const speechRecognitionSupport = !!(window as any).SpeechRecognition || 
                                       !!(window as any).webkitSpeechRecognition;
 
-    addDebugLog(`[Device] iOS: ${ios}, Android: ${android}, Mobile: ${mobile}`);
+    addDebugLog(`[Device] iOS: ${ios}, Android: ${android}, Mobile: ${mobile}, Safari: ${isSafariBrowser()}`);
     addDebugLog(`[API] SpeechRecognition: ${speechRecognitionSupport}`);
 
     const shouldForceOpenAI = ios || android || !speechRecognitionSupport;
-    
+
     addDebugLog(`[Strategy] ${shouldForceOpenAI ? '📱 OpenAI Mode (ScriptProcessor VAD)' : '💻 Browser Mode'}`);
 
     setForceOpenAI(shouldForceOpenAI);
@@ -548,18 +604,15 @@ export const useTranscription = ({
       audioStreamRef.current = stream;
       setMicrophoneAccessGranted(true);
 
-      // === MOBILE: ScriptProcessor VAD + MediaRecorder ===
+      // === MOBILE: ScriptProcessor VAD + TTS Interruption ===
       if (ios || android) {
-        addDebugLog(`[Init] 📱 Starting ScriptProcessor VAD for mobile`);
+        addDebugLog(`[Init] 📱 Starting ScriptProcessor VAD with TTS Interruption`);
         
-        // Сначала запускаем запись
         startMediaRecording(stream);
-        
-        // Затем VAD для анализа громкости
         setupScriptProcessorVAD(stream);
         
         recognitionActiveRef.current = true;
-        addDebugLog(`[Init] ✅ Mobile VAD active - speak to test!`);
+        addDebugLog(`[Init] ✅ Mobile VAD + TTS Interruption active!`);
         return;
       }
 
@@ -572,130 +625,133 @@ export const useTranscription = ({
         
         const SpeechRecognition = (window as any).SpeechRecognition || 
                                   (window as any).webkitSpeechRecognition;
-        const recognition = new SpeechRecognition();
+      const recognition = new SpeechRecognition();
         
-        recognition.lang = "ru-RU";
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
+      recognition.lang = "ru-RU";
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
 
-        recognition.onresult = (event: any) => {
-          if (hasEchoProblems() && isTTSActiveRef.current) return;
+      recognition.onresult = (event: any) => {
+          // Echo prevention for Chrome
+        if (hasEchoProblems() && isTTSActiveRef.current) return;
 
-          let finalTranscript = "";
-          let interimTranscript = "";
+        let finalTranscript = "";
+        let interimTranscript = "";
 
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
             if (result.isFinal) {
               finalTranscript += result[0].transcript;
             } else {
               interimTranscript += result[0].transcript;
             }
-          }
+        }
 
-          if (finalTranscript.trim()) {
-            const trimmedText = finalTranscript.trim();
-            const lastText = lastProcessedTextRef.current;
+        if (finalTranscript.trim()) {
+          const trimmedText = finalTranscript.trim();
+          const lastText = lastProcessedTextRef.current;
 
             const isExtension = lastText && 
                                trimmedText.startsWith(lastText) && 
                                (trimmedText.length - lastText.length) > 5;
-            const lengthDiff = Math.abs(trimmedText.length - (lastText?.length || 0));
-            const maxLength = Math.max(trimmedText.length, lastText?.length || 0);
-            const isMinorCorrection = lastText && (lengthDiff / maxLength) < 0.2 && lengthDiff < 50;
+          const lengthDiff = Math.abs(trimmedText.length - (lastText?.length || 0));
+          const maxLength = Math.max(trimmedText.length, lastText?.length || 0);
+          const isMinorCorrection = lastText && (lengthDiff / maxLength) < 0.2 && lengthDiff < 50;
 
-            if (isExtension || isMinorCorrection || lastProcessedTextRef.current === trimmedText) {
-              lastProcessedTextRef.current = trimmedText;
-              return;
-            }
-
+          if (isExtension || isMinorCorrection || lastProcessedTextRef.current === trimmedText) {
             lastProcessedTextRef.current = trimmedText;
-            if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
-            browserRetryCountRef.current = 0;
-            
-            addDebugLog(`[Browser] ✅ Final: "${trimmedText}"`);
-            onTranscriptionComplete(trimmedText, 'browser');
-            
-          } else if (interimTranscript.trim()) {
-            if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
-            
-            speechTimeoutRef.current = window.setTimeout(() => {
-              if (hasEchoProblems() && isTTSActiveRef.current) return;
-              
-              const trimmedInterim = interimTranscript.trim();
-              addDebugLog(`[Browser] ⏱️ Interim timeout: "${trimmedInterim}"`);
-              onTranscriptionComplete(trimmedInterim, 'browser');
-            }, 1500);
-          }
-        };
-
-        recognition.onspeechstart = () => {
-          lastProcessedTextRef.current = '';
-          onSpeechStart?.();
-          
-          if (!hasEchoProblems() && isTTSActiveRef.current) {
-            const now = Date.now();
-            if (now - lastSafariSpeechTimeRef.current > SAFARI_DEBOUNCE) {
-              lastSafariSpeechTimeRef.current = now;
-              onInterruption?.();
-            }
-          }
-        };
-
-        recognition.onerror = async (event: any) => {
-          if (event.error === 'no-speech' || event.error === 'aborted') return;
-          
-          addDebugLog(`[Browser] ❌ Error: ${event.error}`);
-
-          const retryable = ['network', 'audio-capture', 'not-allowed'];
-          if (retryable.includes(event.error) && browserRetryCountRef.current < 3) {
-            browserRetryCountRef.current++;
-            setTimeout(() => {
-              if (recognitionActiveRef.current) {
-                try { recognition.start(); } catch(e) {}
-              }
-            }, 1000 * browserRetryCountRef.current);
             return;
           }
 
-          if (browserRetryCountRef.current >= 3 || ['network', 'audio-capture'].includes(event.error)) {
-            addDebugLog(`[Fallback] Switching to OpenAI`);
-            setTranscriptionMode('openai');
+          lastProcessedTextRef.current = trimmedText;
+          if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+          browserRetryCountRef.current = 0;
             
-            const blob = await stopMediaRecording();
-            if (blob && blob.size > 1000) {
-              const text = await transcribeWithOpenAI(blob);
-              if (text) {
+            addDebugLog(`[Browser] ✅ Final: "${trimmedText}"`);
+          onTranscriptionComplete(trimmedText, 'browser');
+            
+        } else if (interimTranscript.trim()) {
+          if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+            
+          speechTimeoutRef.current = window.setTimeout(() => {
+            if (hasEchoProblems() && isTTSActiveRef.current) return;
+              
+            const trimmedInterim = interimTranscript.trim();
+              addDebugLog(`[Browser] ⏱️ Interim timeout: "${trimmedInterim}"`);
+            onTranscriptionComplete(trimmedInterim, 'browser');
+          }, 1500);
+        }
+      };
+
+      recognition.onspeechstart = () => {
+        lastProcessedTextRef.current = '';
+        onSpeechStart?.();
+          
+          // Safari TTS Interruption via Speech Recognition
+        if (!hasEchoProblems() && isTTSActiveRef.current) {
+            const now = Date.now();
+            if (now - lastSafariSpeechTimeRef.current > SAFARI_DEBOUNCE) {
+              addDebugLog(`[Browser] 🎤 Safari voice interruption via SpeechRecognition`);
+              lastSafariSpeechTimeRef.current = now;
+            onInterruption?.();
+          }
+        }
+      };
+
+      recognition.onerror = async (event: any) => {
+        if (event.error === 'no-speech' || event.error === 'aborted') return;
+          
+          addDebugLog(`[Browser] ❌ Error: ${event.error}`);
+
+        const retryable = ['network', 'audio-capture', 'not-allowed'];
+        if (retryable.includes(event.error) && browserRetryCountRef.current < 3) {
+          browserRetryCountRef.current++;
+          setTimeout(() => {
+            if (recognitionActiveRef.current) {
+              try { recognition.start(); } catch(e) {}
+            }
+          }, 1000 * browserRetryCountRef.current);
+          return;
+        }
+
+        if (browserRetryCountRef.current >= 3 || ['network', 'audio-capture'].includes(event.error)) {
+            addDebugLog(`[Fallback] Switching to OpenAI`);
+          setTranscriptionMode('openai');
+            
+          const blob = await stopMediaRecording();
+          if (blob && blob.size > 1000) {
+            const text = await transcribeWithOpenAI(blob);
+            if (text) {
                 const filtered = filterHallucinatedText(text);
                 if (filtered) {
                   onTranscriptionComplete(filtered, 'openai');
                 }
-              } else {
-                onError?.("Не удалось распознать речь");
-              }
+            } else {
+              onError?.("Не удалось распознать речь");
             }
+          }
             
-            setTranscriptionMode('browser');
-            browserRetryCountRef.current = 0;
+          setTranscriptionMode('browser');
+          browserRetryCountRef.current = 0;
             
             if (audioStreamRef.current) {
               startMediaRecording(audioStreamRef.current);
             }
-          }
-        };
+        }
+      };
 
-        recognition.onend = () => {
-          if (recognitionActiveRef.current && !isTTSActiveRef.current) {
-            try { recognition.start(); } catch (e) {}
-          }
-        };
+      recognition.onend = () => {
+        if (recognitionActiveRef.current && !isTTSActiveRef.current) {
+          try { recognition.start(); } catch (e) {}
+        }
+      };
 
-        recognitionRef.current = recognition;
-        recognitionActiveRef.current = true;
-        recognition.start();
+      recognitionRef.current = recognition;
+      recognitionActiveRef.current = true;
+      recognition.start();
         
-        addDebugLog(`[Init] ✅ Browser recognition started`);
+        addDebugLog(`[Init] ✅ Browser recognition started with TTS Interruption`);
       }
 
     } catch (error: any) {
@@ -708,13 +764,13 @@ export const useTranscription = ({
           errorMessage = "Доступ к микрофону запрещен. Разрешите в настройках браузера.";
           break;
         case 'NotFoundError':
-          errorMessage = "Микрофон не найден.";
+        errorMessage = "Микрофон не найден.";
           break;
         case 'NotReadableError':
           errorMessage = "Микрофон занят другим приложением.";
           break;
         case 'SecurityError':
-          errorMessage = "Требуется HTTPS для доступа к микрофону.";
+        errorMessage = "Требуется HTTPS для доступа к микрофону.";
           break;
       }
 
@@ -726,6 +782,7 @@ export const useTranscription = ({
     isIOSDevice,
     isAndroidDevice,
     isMobileDevice,
+    isSafariBrowser,
     hasEchoProblems,
     startMediaRecording,
     stopMediaRecording,
@@ -749,6 +806,7 @@ export const useTranscription = ({
     recognitionActiveRef.current = false;
     speechActiveRef.current = false;
     isProcessingRef.current = false;
+    interruptionConfirmFramesRef.current = 0;
     
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch(e) {}

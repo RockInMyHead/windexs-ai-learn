@@ -219,6 +219,7 @@ const VoiceChat = () => {
       console.log(`[VoiceChat] ✅ User message processed (ID: ${transcriptionId})`);
     },
     onInterruption: () => {
+      addDebugLog('[VoiceChat] 🛑 TTS INTERRUPTED by user speech!');
       stopTTS();
     },
     onSpeechStart: () => {
