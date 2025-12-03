@@ -1,7 +1,7 @@
 import Navigation from "@/components/Navigation";
 import { useParams, useNavigate } from "react-router-dom";
 import { getCourseDisplayName } from "@/lib/utils";
-import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2, Bug, X, Square } from "lucide-react";
+import { Mic, MicOff, Volume2, VolumeX, Phone, PhoneOff, Loader2, Bug, X, Square, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
@@ -19,6 +19,33 @@ const DebugLogs = ({ logs, isVisible, onToggle, onClear }: {
   onToggle: () => void;
   onClear: () => void;
 }) => {
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
+
+  const copyLogs = useCallback(async () => {
+    if (logs.length === 0) return;
+    
+    const logsText = logs.slice(-50).join('\n');
+    try {
+      await navigator.clipboard.writeText(logsText);
+      setCopied(true);
+      toast({
+        title: "Логи скопированы",
+        description: `${logs.slice(-50).length} строк скопировано в буфер обмена`,
+        duration: 2000,
+      });
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy logs:', error);
+      toast({
+        title: "Ошибка копирования",
+        description: "Не удалось скопировать логи",
+        variant: "destructive",
+        duration: 2000,
+      });
+    }
+  }, [logs, toast]);
+
   if (!isVisible) return null;
 
   return (
@@ -29,6 +56,20 @@ const DebugLogs = ({ logs, isVisible, onToggle, onClear }: {
           Debug Logs
         </span>
         <div className="flex gap-1">
+          <Button
+            onClick={copyLogs}
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-xs text-gray-400 hover:text-white"
+            disabled={logs.length === 0}
+            title="Скопировать логи"
+          >
+            {copied ? (
+              <Check className="w-3 h-3" />
+            ) : (
+              <Copy className="w-3 h-3" />
+            )}
+          </Button>
           <Button
             onClick={onClear}
             size="sm"
