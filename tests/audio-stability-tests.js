@@ -10,7 +10,7 @@ import path from 'path';
 
 // Мок браузерного окружения
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', {
-  url: 'http://localhost:3000',
+  url: 'https://teacher.windexs.ru',
   pretendToBeVisual: true,
   resources: 'usable'
 });

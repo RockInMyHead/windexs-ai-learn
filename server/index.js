@@ -83,8 +83,8 @@ app.use(cors({
       return callback(null, true);
     }
 
-    // Allow localhost origins for development
-    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+    // Allow teacher.windexs.ru origins for production
+    if (origin.startsWith('https://teacher.windexs.ru')) {
       return callback(null, true);
     }
 
@@ -1843,7 +1843,7 @@ app.post('/api/speech', authenticateToken, async (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 Production URL: https://teacher.windexs.ru`);
-  console.log(`🏠 Local development: http://localhost:${PORT}`);
+  console.log(`🚀 Production server: https://teacher.windexs.ru`);
   if (!OPENAI_API_KEY) {
     console.log('⚠️  OPENAI_API_KEY not set - using fallback responses');
   }

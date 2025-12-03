@@ -20,6 +20,6 @@ ngrok http 8080 --https
 ```
 
 ## Логи:
-- Vite: http://localhost:8080
-- Backend: http://localhost:4000
+- Vite: https://teacher.windexs.ru
+- Backend: https://teacher.windexs.ru/api
 - Ngrok dashboard: http://localhost:4040

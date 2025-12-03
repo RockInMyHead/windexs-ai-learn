@@ -24,8 +24,8 @@ fi
 
 # Start the server
 echo "🌐 Starting server on port $PORT..."
-echo "📊 Health check: http://localhost:$PORT/health"
-echo "🔗 API endpoints: http://localhost:$PORT/api/*"
+echo "📊 Health check: https://teacher.windexs.ru/health"
+echo "🔗 API endpoints: https://teacher.windexs.ru/api/*"
 
 # Use PM2 or direct node
 if command -v pm2 &> /dev/null; then

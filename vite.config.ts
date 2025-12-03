@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => ({
     port: 8080,
     allowedHosts: [
       "127.0.0.1",
-      "localhost",
+      "teacher.windexs.ru",
       "teacher.windexs.ru"
     ],
     proxy: {

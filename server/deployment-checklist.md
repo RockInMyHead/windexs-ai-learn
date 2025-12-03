@@ -27,7 +27,7 @@ server {
     server_name teacher.windexs.ru;
     
     location /api/ {
-        proxy_pass http://localhost:4000/;
+        proxy_pass https://teacher.windexs.ru/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
