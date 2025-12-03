@@ -326,6 +326,15 @@ export const useTranscription = ({
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContextClass();
+
+      // Resume audio context for iOS/Safari (required for proper audio processing)
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+        addDebugLog(`[AudioContext] Resumed suspended context`);
+      }
+
+      addDebugLog(`[AudioContext] Initialized: ${audioContext.state}, sampleRate: ${audioContext.sampleRate}`);
+
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
@@ -335,85 +344,109 @@ export const useTranscription = ({
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
       const checkVolume = () => {
-        if (!recognitionActiveRef.current || !audioAnalyserRef.current) return;
-
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-
-        // Debug volume levels only when speech is detected or very quiet
-        if (average > SPEECH_DETECTION_THRESHOLD * 1.5 || (average < 0.5 && Math.floor(Date.now() / 1000) % 5 === 0)) {
-          addDebugLog(`[Volume] Level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
+        if (!recognitionActiveRef.current || !audioAnalyserRef.current) {
+          const isMobile = isIOSDevice() || isAndroidDevice();
+          if (isMobile) {
+            addDebugLog(`[Mobile] Volume monitoring stopped - active: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}`);
+          }
+          return;
         }
 
-        // Speech detection for mobile devices (OpenAI mode)
-        const isMobile = isIOSDevice() || isAndroidDevice();
-        const isDesktop = !isMobile;
+        try {
+          analyser.getByteFrequencyData(dataArray);
+          const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
 
-        // Debug device detection once
-        if (!window.deviceDebugLogged) {
-          addDebugLog(`[Device] Mobile: ${isMobile}, Desktop: ${isDesktop}, iOS: ${isIOSDevice()}, Android: ${isAndroidDevice()}`);
-          window.deviceDebugLogged = true;
-        }
-
-        if (isMobile) {
-          if (average > SPEECH_DETECTION_THRESHOLD) {
-            // Speech detected
-            if (!speechActiveRef.current) {
-              addDebugLog(`[Speech] 🎙️ Speech started (volume: ${average.toFixed(1)})`);
-              speechActiveRef.current = true;
-            }
-            speechEndFrameCountRef.current = 0; // Reset end counter
-
-            // Clear any pending speech end timeout (allows user to continue speaking)
-            if (speechEndTimeoutRef.current) {
-              addDebugLog(`[Speech] 🛑 Transcription timeout cancelled - user continued speaking`);
-              clearTimeout(speechEndTimeoutRef.current);
-              speechEndTimeoutRef.current = null;
+          // Debug volume levels - more frequent for mobile devices
+          const isMobile = isIOSDevice() || isAndroidDevice();
+          if (isMobile) {
+            // Log every second for mobile to debug
+            if (Math.floor(Date.now() / 1000) % 1 === 0) {
+              addDebugLog(`[Mobile] Volume: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
             }
           } else {
-            // No speech detected
-            if (speechActiveRef.current) {
-              speechEndFrameCountRef.current++;
-              if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
-                // Speech has ended
-                addDebugLog(`[Speech] Speech ended (volume: ${average.toFixed(1)}), frames below threshold: ${speechEndFrameCountRef.current}`);
-                handleSpeechEnd();
+            // Less frequent for desktop
+            if (average > SPEECH_DETECTION_THRESHOLD * 1.5 || (average < 0.5 && Math.floor(Date.now() / 1000) % 5 === 0)) {
+              addDebugLog(`[Volume] Level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
+            }
+          }
+
+          // Speech detection for mobile devices (OpenAI mode)
+          const isDesktop = !isMobile;
+
+          // Debug device detection once
+          if (!window.deviceDebugLogged) {
+            addDebugLog(`[Device] Mobile: ${isMobile}, Desktop: ${isDesktop}, iOS: ${isIOSDevice()}, Android: ${isAndroidDevice()}`);
+            window.deviceDebugLogged = true;
+          }
+
+          if (isMobile) {
+            // Lower threshold for mobile devices - microphones may be less sensitive
+            const mobileThreshold = SPEECH_DETECTION_THRESHOLD * 0.5; // 1.0 instead of 2.0
+            if (average > mobileThreshold) {
+              // Speech detected
+              if (!speechActiveRef.current) {
+                addDebugLog(`[Speech] 🎙️ Mobile speech started (volume: ${average.toFixed(1)}, threshold: ${mobileThreshold})`);
+                speechActiveRef.current = true;
+              }
+              speechEndFrameCountRef.current = 0; // Reset end counter
+
+              // Clear any pending speech end timeout (allows user to continue speaking)
+              if (speechEndTimeoutRef.current) {
+                addDebugLog(`[Speech] 🛑 Transcription timeout cancelled - user continued speaking`);
+                clearTimeout(speechEndTimeoutRef.current);
+                speechEndTimeoutRef.current = null;
+              }
+            } else {
+              // No speech detected
+              if (speechActiveRef.current) {
+                speechEndFrameCountRef.current++;
+                if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
+                  // Speech has ended
+                  addDebugLog(`[Speech] Mobile speech ended (volume: ${average.toFixed(1)}), frames below threshold: ${speechEndFrameCountRef.current}`);
+                  handleSpeechEnd();
+                }
+              }
+            }
+          } else if (isDesktop) {
+            // Desktop speech detection - try lower threshold if mobile detection isn't working
+            const desktopThreshold = SPEECH_DETECTION_THRESHOLD * 0.8; // 1.6 for even better detection
+            if (average > desktopThreshold) {
+              if (!speechActiveRef.current) {
+                addDebugLog(`[Speech] 🎙️ Desktop speech started (volume: ${average.toFixed(1)}, threshold: ${desktopThreshold.toFixed(1)})`);
+                speechActiveRef.current = true;
+              }
+              speechEndFrameCountRef.current = 0;
+
+              if (speechEndTimeoutRef.current) {
+                clearTimeout(speechEndTimeoutRef.current);
+                speechEndTimeoutRef.current = null;
+              }
+            } else {
+              if (speechActiveRef.current) {
+                speechEndFrameCountRef.current++;
+                if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
+                  addDebugLog(`[Speech] Desktop speech ended (volume: ${average.toFixed(1)})`);
+                  handleSpeechEnd();
+                }
               }
             }
           }
-        } else if (isDesktop) {
-          // Desktop speech detection - try lower threshold if mobile detection isn't working
-          const desktopThreshold = SPEECH_DETECTION_THRESHOLD * 0.8; // 1.6 for even better detection
-          if (average > desktopThreshold) {
-            if (!speechActiveRef.current) {
-              addDebugLog(`[Speech] 🎙️ Desktop speech started (volume: ${average.toFixed(1)}, threshold: ${desktopThreshold.toFixed(1)})`);
-              speechActiveRef.current = true;
-            }
+
+          // Fallback: if no device-specific detection worked but volume is very high
+          if (!speechActiveRef.current && average > SPEECH_DETECTION_THRESHOLD * 2) {
+            addDebugLog(`[Speech] 🚨 HIGH VOLUME detected: ${average.toFixed(1)} - forcing speech start`);
+            speechActiveRef.current = true;
             speechEndFrameCountRef.current = 0;
-
             if (speechEndTimeoutRef.current) {
               clearTimeout(speechEndTimeoutRef.current);
               speechEndTimeoutRef.current = null;
             }
-          } else {
-            if (speechActiveRef.current) {
-              speechEndFrameCountRef.current++;
-              if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
-                addDebugLog(`[Speech] Desktop speech ended (volume: ${average.toFixed(1)})`);
-                handleSpeechEnd();
-              }
-            }
           }
-        }
 
-        // Fallback: if no device-specific detection worked but volume is very high
-        if (!speechActiveRef.current && average > SPEECH_DETECTION_THRESHOLD * 2) {
-          addDebugLog(`[Speech] 🚨 HIGH VOLUME detected: ${average.toFixed(1)} - forcing speech start`);
-          speechActiveRef.current = true;
-          speechEndFrameCountRef.current = 0;
-          if (speechEndTimeoutRef.current) {
-            clearTimeout(speechEndTimeoutRef.current);
-            speechEndTimeoutRef.current = null;
+        } catch (error) {
+          const isMobile = isIOSDevice() || isAndroidDevice();
+          if (isMobile) {
+            addDebugLog(`[Mobile] Audio analysis error: ${error.message}`);
           }
         }
 
