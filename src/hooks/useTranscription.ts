@@ -324,6 +324,9 @@ export const useTranscription = ({
   // Volume monitoring
   const startVolumeMonitoring = async (stream: MediaStream) => {
     try {
+      const isMobile = isIOSDevice() || isAndroidDevice();
+      addDebugLog(`[Volume] Starting volume monitoring... (mobile: ${isMobile})`);
+      
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       const audioContext = new AudioContextClass();
 
@@ -335,19 +338,43 @@ export const useTranscription = ({
 
       addDebugLog(`[AudioContext] Initialized: ${audioContext.state}, sampleRate: ${audioContext.sampleRate}`);
 
+      // Проверяем состояние потока перед созданием источника
+      const tracks = stream.getTracks();
+      const audioTracks = tracks.filter(t => t.kind === 'audio');
+      addDebugLog(`[Volume] Stream check - total tracks: ${tracks.length}, audio tracks: ${audioTracks.length}`);
+      audioTracks.forEach((track, idx) => {
+        addDebugLog(`[Volume] Track ${idx}: enabled=${track.enabled}, readyState=${track.readyState}, muted=${track.muted}`);
+      });
+      
       const source = audioContext.createMediaStreamSource(stream);
+      addDebugLog(`[Volume] ✅ MediaStreamSource created from stream (tracks: ${stream.getTracks().length})`);
+      
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
       source.connect(analyser);
       audioAnalyserRef.current = analyser;
+      addDebugLog(`[Volume] ✅ Analyser connected, fftSize: ${analyser.fftSize}, frequencyBinCount: ${analyser.frequencyBinCount}`);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
 
+      let lastLogTime = 0;
+      let frameCount = 0;
+      
       const checkVolume = () => {
+        frameCount++;
+        const now = Date.now();
+        const isMobile = isIOSDevice() || isAndroidDevice();
+        
+        // Подробная проверка состояния
         if (!recognitionActiveRef.current || !audioAnalyserRef.current) {
-          const isMobile = isIOSDevice() || isAndroidDevice();
           if (isMobile) {
-            addDebugLog(`[Mobile] Volume monitoring stopped - active: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}`);
+            // Логируем каждые 2 секунды, чтобы не спамить
+            if (now - lastLogTime > 2000) {
+              addDebugLog(`[Mobile] ⚠️ Volume monitoring stopped - active: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}, frame: ${frameCount}`);
+              addDebugLog(`[Mobile] State check - recognitionActiveRef: ${recognitionActiveRef.current}, audioAnalyserRef: ${!!audioAnalyserRef.current}`);
+              lastLogTime = now;
+            }
           }
           return;
         }
@@ -355,17 +382,25 @@ export const useTranscription = ({
         try {
           analyser.getByteFrequencyData(dataArray);
           const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+          const maxVolume = Math.max(...Array.from(dataArray));
 
-          // Debug volume levels - more frequent for mobile devices
-          const isMobile = isIOSDevice() || isAndroidDevice();
+          // Debug volume levels - более частые логи для мобильных устройств
           if (isMobile) {
-            // Log every second for mobile to debug
-            if (Math.floor(Date.now() / 1000) % 1 === 0) {
-              addDebugLog(`[Mobile] Volume: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
+            // Логируем каждую секунду для мобильных устройств
+            if (now - lastLogTime >= 1000) {
+              // Проверяем состояние потока
+              const streamTracks = audioStreamRef.current?.getTracks() || [];
+              const audioTracks = streamTracks.filter(t => t.kind === 'audio');
+              const trackStates = audioTracks.map(t => `enabled=${t.enabled},ready=${t.readyState},muted=${t.muted}`).join(';');
+              
+              addDebugLog(`[Mobile] 🔊 Volume: avg=${average.toFixed(2)}, max=${maxVolume}, threshold=${SPEECH_DETECTION_THRESHOLD}, speechActive=${speechActiveRef.current}, frame=${frameCount}`);
+              addDebugLog(`[Mobile] State - recognitionActive: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}, stream: ${!!audioStreamRef.current}`);
+              addDebugLog(`[Mobile] Stream tracks (${audioTracks.length}): ${trackStates}`);
+              lastLogTime = now;
             }
           } else {
             // Less frequent for desktop
-            if (average > SPEECH_DETECTION_THRESHOLD * 1.5 || (average < 0.5 && Math.floor(Date.now() / 1000) % 5 === 0)) {
+            if (average > SPEECH_DETECTION_THRESHOLD * 1.5 || (average < 0.5 && Math.floor(now / 1000) % 5 === 0)) {
               addDebugLog(`[Volume] Level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
             }
           }
@@ -382,11 +417,19 @@ export const useTranscription = ({
           if (isMobile) {
             // Lower threshold for mobile devices - microphones may be less sensitive
             const mobileThreshold = SPEECH_DETECTION_THRESHOLD * 0.5; // 1.0 instead of 2.0
-            if (average > mobileThreshold) {
+            const isAboveThreshold = average > mobileThreshold;
+            
+            // Подробное логирование для мобильных устройств
+            if (now - lastLogTime >= 1000) {
+              addDebugLog(`[Mobile] 🎤 Speech check - volume: ${average.toFixed(2)}, threshold: ${mobileThreshold.toFixed(2)}, above: ${isAboveThreshold}, speechActive: ${speechActiveRef.current}, endFrames: ${speechEndFrameCountRef.current}/${SPEECH_END_FRAMES}`);
+            }
+            
+            if (isAboveThreshold) {
               // Speech detected
               if (!speechActiveRef.current) {
-                addDebugLog(`[Speech] 🎙️ Mobile speech started (volume: ${average.toFixed(1)}, threshold: ${mobileThreshold})`);
+                addDebugLog(`[Speech] 🎙️ Mobile speech STARTED (volume: ${average.toFixed(2)}, threshold: ${mobileThreshold.toFixed(2)}, max: ${maxVolume})`);
                 speechActiveRef.current = true;
+                onSpeechStart?.();
               }
               speechEndFrameCountRef.current = 0; // Reset end counter
 
@@ -400,10 +443,18 @@ export const useTranscription = ({
               // No speech detected
               if (speechActiveRef.current) {
                 speechEndFrameCountRef.current++;
+                if (now - lastLogTime >= 1000) {
+                  addDebugLog(`[Mobile] 🔇 Silence detected - volume: ${average.toFixed(2)}, endFrames: ${speechEndFrameCountRef.current}/${SPEECH_END_FRAMES}`);
+                }
                 if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
                   // Speech has ended
-                  addDebugLog(`[Speech] Mobile speech ended (volume: ${average.toFixed(1)}), frames below threshold: ${speechEndFrameCountRef.current}`);
+                  addDebugLog(`[Speech] 🛑 Mobile speech ENDED (volume: ${average.toFixed(2)}), frames below threshold: ${speechEndFrameCountRef.current}`);
                   handleSpeechEnd();
+                }
+              } else {
+                // Логируем тишину, когда речь не активна (для отладки)
+                if (now - lastLogTime >= 2000 && average < 0.5) {
+                  addDebugLog(`[Mobile] 🔇 Very quiet - volume: ${average.toFixed(2)}, may indicate mic issue`);
                 }
               }
             }
@@ -443,10 +494,11 @@ export const useTranscription = ({
             }
           }
 
-        } catch (error) {
+        } catch (error: any) {
           const isMobile = isIOSDevice() || isAndroidDevice();
           if (isMobile) {
-            addDebugLog(`[Mobile] Audio analysis error: ${error.message}`);
+            addDebugLog(`[Mobile] ❌ Audio analysis error: ${error?.message || error}, frame: ${frameCount}`);
+            addDebugLog(`[Mobile] Error details - analyser: ${!!audioAnalyserRef.current}, stream: ${!!audioStreamRef.current}, active: ${recognitionActiveRef.current}`);
           }
         }
 
@@ -473,20 +525,48 @@ export const useTranscription = ({
         }
         volumeMonitorRef.current = requestAnimationFrame(checkVolume);
       };
+      
+      addDebugLog(`[Volume] ✅ Starting volume check loop...`);
       volumeMonitorRef.current = requestAnimationFrame(checkVolume);
-    } catch (error) {
+      
+      // Проверка через секунду, что все работает
+      setTimeout(() => {
+        const isMobile = isIOSDevice() || isAndroidDevice();
+        if (isMobile) {
+          addDebugLog(`[Volume] 1s check - active: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}, monitor: ${!!volumeMonitorRef.current}`);
+        }
+      }, 1000);
+      
+    } catch (error: any) {
+      const isMobile = isIOSDevice() || isAndroidDevice();
+      const errorMsg = `[Volume] ❌ Volume monitoring failed: ${error?.message || error}`;
+      addDebugLog(errorMsg);
+      if (isMobile) {
+        addDebugLog(`[Volume] Mobile error details - stream: ${!!stream}, stream tracks: ${stream?.getTracks().length || 0}`);
+      }
       console.warn("[Transcription] Volume monitoring failed:", error);
     }
   };
 
   const stopVolumeMonitoring = () => {
+    const isMobile = isIOSDevice() || isAndroidDevice();
+    if (isMobile) {
+      addDebugLog(`[Volume] 🛑 Stopping volume monitoring...`);
+    }
+    
     if (volumeMonitorRef.current) {
       cancelAnimationFrame(volumeMonitorRef.current);
       volumeMonitorRef.current = null;
+      if (isMobile) {
+        addDebugLog(`[Volume] ✅ Animation frame cancelled`);
+      }
     }
     if (audioAnalyserRef.current) {
       audioAnalyserRef.current.disconnect();
       audioAnalyserRef.current = null;
+      if (isMobile) {
+        addDebugLog(`[Volume] ✅ Analyser disconnected`);
+      }
     }
   };
 
@@ -531,6 +611,11 @@ export const useTranscription = ({
 
       startMediaRecording(stream);
       addDebugLog(`[Init] Starting volume monitoring...`);
+      
+      // Проверяем состояние потока
+      const tracks = stream.getTracks();
+      addDebugLog(`[Init] Stream tracks: ${tracks.length}, enabled: ${tracks.map(t => t.enabled).join(',')}, readyState: ${tracks.map(t => t.readyState).join(',')}`);
+      
       startVolumeMonitoring(stream);
 
       if (ios || android) {
@@ -544,6 +629,13 @@ export const useTranscription = ({
         // so that volume monitoring continues to work
         recognitionActiveRef.current = true;
         addDebugLog(`[Init] ✅ Mobile OpenAI mode ready - volume monitoring active`);
+        addDebugLog(`[Init] State set - recognitionActiveRef: ${recognitionActiveRef.current}, audioStream: ${!!audioStreamRef.current}`);
+        
+        // Проверяем состояние через небольшую задержку
+        setTimeout(() => {
+          addDebugLog(`[Init] Post-init check - recognitionActive: ${recognitionActiveRef.current}, analyser: ${!!audioAnalyserRef.current}, stream: ${!!audioStreamRef.current}`);
+        }, 500);
+        
         return;
       }
 
@@ -646,6 +738,10 @@ export const useTranscription = ({
 
       recognitionRef.current = recognition;
       recognitionActiveRef.current = true;
+      const isMobile = isIOSDevice() || isAndroidDevice();
+      if (isMobile) {
+        addDebugLog(`[Recognition] Browser mode - recognitionActive set to true`);
+      }
       recognition.start();
 
     } catch (error: any) {
@@ -667,9 +763,19 @@ export const useTranscription = ({
 
   // Cleanup
   const cleanup = useCallback(() => {
+    const isMobile = isIOSDevice() || isAndroidDevice();
+    if (isMobile) {
+      addDebugLog(`[Cleanup] 🧹 Starting cleanup...`);
+    }
+    
     lastProcessedTextRef.current = '';
     recognitionActiveRef.current = false;
     speechActiveRef.current = false;
+    
+    if (isMobile) {
+      addDebugLog(`[Cleanup] State reset - recognitionActive: false, speechActive: false`);
+    }
+    
     if (recognitionRef.current) try { recognitionRef.current.stop(); } catch(e) {}
     stopVolumeMonitoring();
     stopMobileTranscriptionTimer();
@@ -682,6 +788,10 @@ export const useTranscription = ({
     if (speechEndTimeoutRef.current) {
       clearTimeout(speechEndTimeoutRef.current);
       speechEndTimeoutRef.current = null;
+    }
+    
+    if (isMobile) {
+      addDebugLog(`[Cleanup] ✅ Cleanup complete`);
     }
   }, [stopMobileTranscriptionTimer]);
 
@@ -699,12 +809,26 @@ export const useTranscription = ({
     forceOpenAI,
     transcriptionMode,
     stopRecognition: () => {
+      const isMobile = isIOSDevice() || isAndroidDevice();
+      if (isMobile) {
+        addDebugLog(`[Recognition] 🛑 stopRecognition called`);
+      }
       recognitionActiveRef.current = false;
       recognitionRef.current?.stop();
+      if (isMobile) {
+        addDebugLog(`[Recognition] State - recognitionActive: ${recognitionActiveRef.current}`);
+      }
     },
     startRecognition: () => {
+      const isMobile = isIOSDevice() || isAndroidDevice();
+      if (isMobile) {
+        addDebugLog(`[Recognition] ▶️ startRecognition called`);
+      }
       recognitionActiveRef.current = true;
       try { recognitionRef.current?.start(); } catch(e) {}
+      if (isMobile) {
+        addDebugLog(`[Recognition] State - recognitionActive: ${recognitionActiveRef.current}`);
+      }
     }
   };
 };

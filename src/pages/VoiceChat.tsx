@@ -202,6 +202,7 @@ const VoiceChat = () => {
 
     } catch (err: any) {
       console.error("Start call error:", err);
+      addDebugLog(`[UI] ❌ Start call error: ${err.message || "Не удалось начать урок"} - cleaning up recognition`);
       setError(err.message || "Не удалось начать урок");
       cleanupRecognition();
     } finally {
@@ -210,6 +211,7 @@ const VoiceChat = () => {
   };
 
   const endCall = async () => {
+    addDebugLog('[UI] 🛑 endCall called - stopping TTS and cleaning up recognition');
     stopTTS();
     cleanupRecognition();
 
@@ -225,9 +227,11 @@ const VoiceChat = () => {
 
   const toggleMute = () => {
     if (isMuted) {
+      addDebugLog('[UI] 🔊 Unmuting - starting recognition');
       setIsMuted(false);
       startRecognition();
-        } else {
+    } else {
+      addDebugLog('[UI] 🔇 Muting - stopping recognition');
       setIsMuted(true);
       stopRecognition();
     }
@@ -242,6 +246,7 @@ const VoiceChat = () => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      addDebugLog('[UI] 🧹 Component unmounting - cleaning up');
       stopTTS();
       cleanupRecognition();
       if (callTimerRef.current) {
