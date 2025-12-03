@@ -539,7 +539,13 @@ export const useTranscription = ({
         // Speech detection is now handled in volume monitoring, no timer needed
       }
 
-      if (shouldForceOpenAI) return;
+      if (shouldForceOpenAI) {
+        // For mobile devices using OpenAI mode, we need to set recognitionActive to true
+        // so that volume monitoring continues to work
+        recognitionActiveRef.current = true;
+        addDebugLog(`[Init] ✅ Mobile OpenAI mode ready - volume monitoring active`);
+        return;
+      }
 
       // Browser Speech Recognition
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
