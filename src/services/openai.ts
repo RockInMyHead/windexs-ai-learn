@@ -211,8 +211,13 @@ class TeacherAI {
 
   async synthesizeSpeech(text: string, options: { model?: string; voice?: string; format?: string } = {}): Promise<ArrayBuffer> {
     return withRetry(async () => {
-      console.log(`[TTS] Synthesizing via backend: "${text.substring(0, 50)}..."`);
+      const synthId = Date.now();
+      console.log(`[TTS-API] 🎤 synthesizeSpeech called (ID: ${synthId})`);
+      console.log(`[TTS-API] 📝 Text: "${text.substring(0, 80)}..." (${text.length} chars)`);
+      console.log(`[TTS-API] ⚙️ Options:`, { model: options.model || 'default', voice: options.voice || 'default', format: options.format || 'default' });
+      
       const token = localStorage.getItem('token');
+      const requestStartTime = Date.now();
 
       const response = await fetch(`${API_BASE_URL}/speech`, {
         method: 'POST',
@@ -226,15 +231,20 @@ class TeacherAI {
         })
       });
 
+      const requestDuration = Date.now() - requestStartTime;
+      console.log(`[TTS-API] 📡 Request completed (ID: ${synthId}): status=${response.status}, took=${requestDuration}ms`);
+
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error(`[TTS-API] ❌ Request failed (ID: ${synthId}):`, errorData);
         throw new Error(errorData.error || 'Speech synthesis failed');
       }
 
       const arrayBuffer = await response.arrayBuffer();
-      console.log(`[TTS] Speech synthesized successfully, buffer size: ${arrayBuffer.byteLength} bytes`);
+      console.log(`[TTS-API] ✅ Speech synthesized successfully (ID: ${synthId}): buffer size=${arrayBuffer.byteLength} bytes, total time=${Date.now() - requestStartTime}ms`);
 
       if (arrayBuffer.byteLength === 0) {
+        console.error(`[TTS-API] ❌ Empty audio buffer received (ID: ${synthId})`);
         throw new Error("Received empty audio buffer");
       }
 

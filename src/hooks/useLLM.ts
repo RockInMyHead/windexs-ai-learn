@@ -25,38 +25,52 @@ export const useLLM = ({ courseId, onResponseGenerated, onError }: UseLLMProps) 
 
   const processUserMessage = useCallback(async (text: string) => {
     const callId = Date.now();
-    console.log(`[LLM] processUserMessage called (ID: ${callId}) with: "${text}"`);
-    if (!text.trim()) return;
+    console.log(`[LLM] 🚀 processUserMessage called (ID: ${callId})`);
+    console.log(`[LLM] 📝 User text: "${text}" (${text.length} chars)`);
+    
+    if (!text.trim()) {
+      console.log(`[LLM] ⚠️ Empty text, skipping (ID: ${callId})`);
+      return;
+    }
 
     if (isProcessing) {
-      console.log(`[LLM] Skipping call (ID: ${callId}) - already processing`);
+      console.log(`[LLM] ⏸️ Skipping call (ID: ${callId}) - already processing`);
       return;
     }
 
     const trimmedText = text.trim();
     if (currentProcessingTextRef.current === trimmedText) {
-      console.log(`[LLM] Skipping call (ID: ${callId}) - same text already being processed`);
+      console.log(`[LLM] ⏸️ Skipping call (ID: ${callId}) - same text already being processed: "${trimmedText.substring(0, 50)}..."`);
       return;
     }
 
+    console.log(`[LLM] ✅ Starting processing (ID: ${callId})`);
     setIsProcessing(true);
     currentProcessingTextRef.current = trimmedText;
     conversationRef.current.push({ role: "user", content: text });
+    console.log(`[LLM] 📊 Conversation length: ${conversationRef.current.length} messages`);
 
     try {
-      console.log(`[LLM] Calling getVoiceResponse...`);
+      console.log(`[LLM] 🤖 Calling getVoiceResponse... (ID: ${callId})`);
+      const llmStartTime = Date.now();
       const assistantReply = await psychologistAI.getVoiceResponse(
         conversationRef.current,
         memoryRef.current,
         false
       );
-      console.log(`[LLM] Got response: "${assistantReply?.substring(0, 50)}..."`);
+      const llmDuration = Date.now() - llmStartTime;
+      console.log(`[LLM] ✅ Got response (ID: ${callId}): "${assistantReply?.substring(0, 100)}..." (${assistantReply?.length || 0} chars, took ${llmDuration}ms)`);
 
       conversationRef.current.push({ role: "assistant", content: assistantReply });
 
       if (onResponseGenerated) {
-        console.log(`[LLM] Calling onResponseGenerated callback`);
+        const callbackId = Date.now();
+        console.log(`[LLM] 📞 Calling onResponseGenerated callback (ID: ${callbackId})`);
+        console.log(`[LLM] 📝 Response text: "${assistantReply?.substring(0, 100)}..." (${assistantReply?.length || 0} chars)`);
+        const callbackStartTime = Date.now();
         await onResponseGenerated(assistantReply);
+        const callbackDuration = Date.now() - callbackStartTime;
+        console.log(`[LLM] ✅ onResponseGenerated callback completed (ID: ${callbackId}, took ${callbackDuration}ms)`);
       }
 
     } catch (error) {

@@ -129,7 +129,14 @@ const VoiceChat = () => {
   } = useLLM({
     courseId,
     onResponseGenerated: async (text) => {
+      const responseId = Date.now();
+      console.log(`[VoiceChat] 📨 onResponseGenerated called (ID: ${responseId})`);
+      console.log(`[VoiceChat] 📝 Response text: "${text?.substring(0, 100)}..." (${text?.length || 0} chars)`);
+      console.log(`[VoiceChat] 🔄 Calling speak()...`);
+      const speakStartTime = Date.now();
       await speak(text);
+      const speakDuration = Date.now() - speakStartTime;
+      console.log(`[VoiceChat] ✅ speak() completed (ID: ${responseId}, took ${speakDuration}ms)`);
     },
     onError: (err) => setError(err)
   });
@@ -149,13 +156,26 @@ const VoiceChat = () => {
     isTTSActiveRef: isAssistantSpeakingRef,
     addDebugLog,
     onTranscriptionComplete: async (text, source) => {
-      console.log(`[VoiceChat] onTranscriptionComplete: "${text}" from ${source}`);
-      if (!text) return;
+      const transcriptionId = Date.now();
+      console.log(`[VoiceChat] 🎤 onTranscriptionComplete called (ID: ${transcriptionId})`);
+      console.log(`[VoiceChat] 📝 Transcribed text: "${text}" (${text.length} chars) from ${source}`);
+      
+      if (!text) {
+        console.log(`[VoiceChat] ⚠️ Empty text, skipping (ID: ${transcriptionId})`);
+        return;
+      }
 
-      if (source !== 'manual') stopTTS();
+      if (source !== 'manual') {
+        console.log(`[VoiceChat] 🛑 Stopping TTS (source: ${source}, ID: ${transcriptionId})`);
+        stopTTS();
+      }
+      
+      console.log(`[VoiceChat] 🔄 Resetting deduplication (ID: ${transcriptionId})`);
       resetDeduplication();
 
+      console.log(`[VoiceChat] 🤖 Processing user message (ID: ${transcriptionId})...`);
       await processUserMessage(text);
+      console.log(`[VoiceChat] ✅ User message processed (ID: ${transcriptionId})`);
     },
     onInterruption: () => {
       stopTTS();

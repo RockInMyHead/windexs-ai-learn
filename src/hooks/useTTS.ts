@@ -89,8 +89,12 @@ export const useTTS = ({ onPlaybackStatusChange }: UseTTSProps = {}) => {
   }, [isPlaying, isSynthesizing]);
 
   const resetDeduplication = useCallback(() => {
-    console.log(`[TTS] Resetting deduplication for new user input`);
+    const resetId = Date.now();
+    const previousText = lastProcessedTextRef.current;
+    console.log(`[TTS] 🔄 Resetting deduplication (ResetID: ${resetId})`);
+    console.log(`[TTS]   Previous lastProcessed: "${previousText?.substring(0, 50) || 'none'}..." (${previousText?.length || 0} chars)`);
     lastProcessedTextRef.current = '';
+    console.log(`[TTS] ✅ Deduplication reset complete (ResetID: ${resetId})`);
   }, []);
 
   const playQueuedAudio = async () => {
@@ -153,12 +157,21 @@ export const useTTS = ({ onPlaybackStatusChange }: UseTTSProps = {}) => {
 
   const speak = useCallback(async (text: string) => {
     const callId = Date.now();
-    console.log(`[TTS] speak called (ID: ${callId}) with text: "${text?.substring(0, 50)}..."`);
+    const stackTrace = new Error().stack?.split('\n').slice(2, 5).join(' -> ') || 'unknown';
+    console.log(`[TTS] 🔊 speak called (ID: ${callId})`);
+    console.log(`[TTS] 📝 Text length: ${text?.length || 0}, preview: "${text?.substring(0, 50)}..."`);
+    console.log(`[TTS] 📍 Call stack: ${stackTrace}`);
 
     const trimmedText = text?.trim() || '';
-    if (!trimmedText) return;
+    if (!trimmedText) {
+      console.log(`[TTS] ⚠️ Empty text after trim, skipping (ID: ${callId})`);
+      return;
+    }
 
     const lastProcessed = lastProcessedTextRef.current;
+    console.log(`[TTS] 🔍 Deduplication check (ID: ${callId}):`);
+    console.log(`[TTS]   - Current text: "${trimmedText.substring(0, 80)}..." (${trimmedText.length} chars)`);
+    console.log(`[TTS]   - Last processed: "${lastProcessed?.substring(0, 80) || 'none'}..." (${lastProcessed?.length || 0} chars)`);
 
     const isExtension = lastProcessed &&
                        trimmedText.startsWith(lastProcessed) &&
@@ -166,54 +179,78 @@ export const useTTS = ({ onPlaybackStatusChange }: UseTTSProps = {}) => {
                        (trimmedText.length - lastProcessed.length) > 10;
 
     if (isExtension) {
-      console.log(`[TTS] Text is extension of previous, skipping (ID: ${callId})`);
+      console.log(`[TTS] 🚫 Text is extension of previous (${lastProcessed.length} -> ${trimmedText.length} chars, +${trimmedText.length - lastProcessed.length}), skipping (ID: ${callId})`);
       lastProcessedTextRef.current = trimmedText;
       return;
     }
 
     if (lastProcessed === trimmedText) {
-      console.log(`[TTS] Skipping exact duplicate text (ID: ${callId})`);
+      console.log(`[TTS] 🚫 Skipping exact duplicate text (ID: ${callId})`);
       return;
     }
 
     const lengthDiff = Math.abs(trimmedText.length - lastProcessed.length);
     const maxLength = Math.max(trimmedText.length, lastProcessed.length);
     if (lastProcessed && (lengthDiff / maxLength) < 0.2 && lengthDiff < 100) {
-      console.log(`[TTS] Text is minor variation, skipping (ID: ${callId})`);
+      console.log(`[TTS] 🚫 Text is minor variation (diff: ${lengthDiff} chars, ${((lengthDiff / maxLength) * 100).toFixed(1)}%), skipping (ID: ${callId})`);
       lastProcessedTextRef.current = trimmedText;
       return;
     }
 
-    console.log(`[TTS] Processing new text (ID: ${callId})`);
+    console.log(`[TTS] ✅ Processing new text (ID: ${callId})`);
     lastProcessedTextRef.current = trimmedText;
 
     const sentences = trimmedText.split(/(?<=[.!?])\s+/u).map(s => s.trim()).filter(s => s.length > 0);
-    if (sentences.length === 0) return;
+    console.log(`[TTS] 📊 Split into ${sentences.length} sentences (ID: ${callId})`);
+    sentences.forEach((s, i) => {
+      console.log(`[TTS]   Sentence ${i + 1}: "${s.substring(0, 50)}..." (${s.length} chars)`);
+    });
+    
+    if (sentences.length === 0) {
+      console.log(`[TTS] ⚠️ No sentences found, skipping (ID: ${callId})`);
+      return;
+    }
 
     const myGenId = generationIdRef.current;
+    console.log(`[TTS] 🎬 Starting synthesis (ID: ${callId}, genId: ${myGenId})`);
     updateSynthesizingState(true);
 
     try {
-      for (const sentence of sentences) {
-        if (generationIdRef.current !== myGenId) break;
+      for (let i = 0; i < sentences.length; i++) {
+        const sentence = sentences[i];
+        if (generationIdRef.current !== myGenId) {
+          console.log(`[TTS] ⏹️ Generation cancelled (ID: ${callId}, sentence ${i + 1}/${sentences.length})`);
+          break;
+        }
 
         try {
+          console.log(`[TTS] 🎤 Synthesizing sentence ${i + 1}/${sentences.length} (ID: ${callId}): "${sentence.substring(0, 50)}..."`);
+          const sentenceStartTime = Date.now();
           const audioBuffer = await psychologistAI.synthesizeSpeech(sentence);
+          const sentenceDuration = Date.now() - sentenceStartTime;
 
-          if (generationIdRef.current !== myGenId) break;
+          if (generationIdRef.current !== myGenId) {
+            console.log(`[TTS] ⏹️ Generation cancelled after synthesis (ID: ${callId}, sentence ${i + 1})`);
+            break;
+          }
 
           if (audioBuffer && audioBuffer.byteLength > 0) {
+            console.log(`[TTS] ✅ Sentence ${i + 1} synthesized (ID: ${callId}): ${audioBuffer.byteLength} bytes, took ${sentenceDuration}ms`);
             audioQueueRef.current.push(audioBuffer);
             if (!isPlayingAudioRef.current) {
               void playQueuedAudio();
             }
+          } else {
+            console.warn(`[TTS] ⚠️ Empty audio buffer for sentence ${i + 1} (ID: ${callId})`);
           }
         } catch (error) {
-          console.warn("[TTS] Synthesis failed for sentence:", sentence, error);
+          console.error(`[TTS] ❌ Synthesis failed for sentence ${i + 1}/${sentences.length} (ID: ${callId}):`, sentence, error);
         }
       }
+      console.log(`[TTS] ✅ All sentences processed (ID: ${callId})`);
     } finally {
       updateSynthesizingState(false);
+      console.log(`[TTS] 🏁 Synthesis complete (ID: ${callId})`);
     }
   }, []);
 
