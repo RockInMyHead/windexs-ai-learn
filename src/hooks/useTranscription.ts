@@ -1,13 +1,14 @@
 /**
- * useTranscription - Голосовая система с blob-based VAD
+ * useTranscription - Голосовая система с ScriptProcessorNode VAD
  * 
  * Архитектура:
- * - iOS/Android: OpenAI Whisper + VAD на основе анализа blob'ов (работает!)
+ * - iOS/Android: OpenAI Whisper + VAD через ScriptProcessorNode (raw PCM анализ)
  * - Desktop: Browser SpeechRecognition + OpenAI fallback
  * 
- * Ключевое отличие от старой системы:
- * - Анализ громкости происходит по записанным blob'ам (decodeAudioData)
- * - А НЕ через AnalyserNode в реальном времени (не работает на iOS)
+ * Ключевое отличие:
+ * - Анализ громкости через ScriptProcessorNode (работает на iOS!)
+ * - MediaRecorder только для записи аудио
+ * - ScriptProcessorNode дает raw PCM данные для анализа в реальном времени
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -52,19 +53,19 @@ export const useTranscription = ({
   const recordedChunksRef = useRef<Blob[]>([]);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const volumeMonitorRef = useRef<number | null>(null);
   const speechTimeoutRef = useRef<number | null>(null);
   const browserRetryCountRef = useRef(0);
   const lastProcessedTextRef = useRef<string>('');
 
   // Mobile VAD refs
-  const mobileVADIntervalRef = useRef<number | null>(null);
   const speechActiveRef = useRef(false);
   const silenceStartTimeRef = useRef<number>(0);
   const speechStartTimeRef = useRef<number>(0);
-  const speechChunksRef = useRef<Blob[]>([]);
   const isProcessingRef = useRef(false);
-  const lastChunkIndexRef = useRef(0);
+  const currentVolumeRef = useRef<number>(0);
+  const volumeHistoryRef = useRef<number[]>([]);
 
   // Safari interruption state
   const safariSpeechCountRef = useRef(0);
@@ -75,12 +76,11 @@ export const useTranscription = ({
   const SAFARI_CONFIRMATION_FRAMES = 3;
   const SAFARI_DEBOUNCE = 1000;
 
-  // Mobile VAD constants - оптимизированы для реального использования
-  const MOBILE_VAD_INTERVAL = 400;        // Анализ каждые 400ms
-  const MOBILE_SPEECH_THRESHOLD = 1.0;    // 1.0% громкости для определения речи (чувствительный)
-  const MOBILE_SILENCE_DURATION = 1200;   // 1.2 сек тишины для окончания речи
-  const MOBILE_MIN_SPEECH_DURATION = 400; // Минимум 400ms речи
-  const MOBILE_MIN_AUDIO_SIZE = 4000;     // Минимум 4KB аудио
+  // Mobile VAD constants
+  const MOBILE_SPEECH_THRESHOLD = 1.5;    // 1.5% громкости для определения речи
+  const MOBILE_SILENCE_DURATION = 1500;   // 1.5 сек тишины для окончания речи
+  const MOBILE_MIN_SPEECH_DURATION = 500; // Минимум 500ms речи
+  const MOBILE_MIN_AUDIO_SIZE = 5000;     // Минимум 5KB аудио
 
   // === BROWSER DETECTION ===
   const isIOSDevice = useCallback(() => {
@@ -109,7 +109,6 @@ export const useTranscription = ({
     
     const lowerText = text.toLowerCase();
 
-    // Паттерны галлюцинаций Whisper
     const hallucinationPatterns = [
       /продолжение следует/i,
       /с вами был/i,
@@ -122,50 +121,30 @@ export const useTranscription = ({
       /подписывайтесь/i,
       /ставьте лайк/i,
       /благодарю за просмотр/i,
-      /^\s*\.+\s*$/,  // Только точки
-      /^\s*,+\s*$/,   // Только запятые
+      /^\s*\.+\s*$/,
+      /^\s*,+\s*$/,
     ];
 
     for (const pattern of hallucinationPatterns) {
       if (pattern.test(lowerText)) {
-        addDebugLog(`[Filter] ⚠️ Hallucination detected: "${text}"`);
+        addDebugLog(`[Filter] ⚠️ Hallucination: "${text}"`);
         return null;
       }
     }
 
-    // Фильтр по длине
-    if (text.length > 200) {
-      addDebugLog(`[Filter] ⚠️ Too long (${text.length} chars): "${text.substring(0, 50)}..."`);
-      return null;
-    }
-    
-    if (text.length < 2) {
-      addDebugLog(`[Filter] ⚠️ Too short (${text.length} chars)`);
-      return null;
-    }
+    if (text.length > 200 || text.length < 2) return null;
+    if (text.split(/[.!?]/).filter(s => s.trim()).length > 4) return null;
 
-    // Слишком много предложений
-    if (text.split(/[.!?]/).filter(s => s.trim()).length > 4) {
-      addDebugLog(`[Filter] ⚠️ Too many sentences`);
-      return null;
-    }
-
-    // Бессмысленные звуки
     const meaninglessPatterns = [
       /^[а-яa-z]{1}$/i,
       /^[эээ]+$/i,
       /^[ммм]+$/i,
       /^[ааа]+$/i,
-      /^[ууу]+$/i,
-      /^[ооо]+$/i,
       /^[а-яa-z]{1,2}$/i,
     ];
 
     for (const pattern of meaninglessPatterns) {
-      if (pattern.test(text.trim())) {
-        addDebugLog(`[Filter] ⚠️ Meaningless sound: "${text}"`);
-        return null;
-      }
+      if (pattern.test(text.trim())) return null;
     }
 
     return text;
@@ -183,36 +162,6 @@ export const useTranscription = ({
       addDebugLog(`[Permissions] Could not query: ${error}`);
     }
   }, [addDebugLog]);
-
-  // === AUDIO VOLUME CHECK (BLOB-BASED) ===
-  // Это ключевая функция! Анализирует громкость по записанному blob'у
-  // Работает на iOS в отличие от AnalyserNode.getByteFrequencyData()
-  const checkAudioVolume = useCallback(async (audioBlob: Blob): Promise<number> => {
-    try {
-      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      const tempContext = new AudioContextClass();
-      
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      const audioBuffer = await tempContext.decodeAudioData(arrayBuffer);
-      
-      let sum = 0;
-      let count = 0;
-      
-      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
-        const channelData = audioBuffer.getChannelData(channel);
-        for (let i = 0; i < channelData.length; i++) {
-          sum += Math.abs(channelData[i]);
-          count++;
-        }
-      }
-      
-      await tempContext.close();
-      return (sum / count) * 100; // Возвращаем в процентах
-    } catch (error) {
-      // Если не удалось декодировать - возвращаем 0
-      return 0;
-    }
-  }, []);
 
   // === OPENAI TRANSCRIPTION ===
   const transcribeWithOpenAI = useCallback(async (audioBlob: Blob): Promise<string | null> => {
@@ -261,7 +210,6 @@ export const useTranscription = ({
       const recorder = new MediaRecorder(stream, { mimeType: selectedMimeType });
       mediaRecorderRef.current = recorder;
       recordedChunksRef.current = [];
-      lastChunkIndexRef.current = 0;
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
@@ -273,13 +221,13 @@ export const useTranscription = ({
         addDebugLog(`[MediaRec] ❌ Error: ${event.error?.message || 'Unknown'}`);
       };
 
-      // Записываем chunks с интервалом для VAD анализа
-      recorder.start(MOBILE_VAD_INTERVAL);
-      addDebugLog(`[MediaRec] ✅ Started (${MOBILE_VAD_INTERVAL}ms chunks)`);
+      // Записываем непрерывно, chunks каждую секунду
+      recorder.start(1000);
+      addDebugLog(`[MediaRec] ✅ Started (1s chunks)`);
     } catch (error: any) {
       addDebugLog(`[MediaRec] ❌ Start failed: ${error.message}`);
     }
-  }, [addDebugLog, MOBILE_VAD_INTERVAL]);
+  }, [addDebugLog]);
 
   const stopMediaRecording = useCallback(async (): Promise<Blob | null> => {
     return new Promise((resolve) => {
@@ -294,6 +242,7 @@ export const useTranscription = ({
         const blob = new Blob(recordedChunksRef.current, {
           type: recorder.mimeType || 'audio/webm'
         });
+        addDebugLog(`[MediaRec] 🛑 Stopped, blob size: ${blob.size} bytes`);
         recordedChunksRef.current = [];
         mediaRecorderRef.current = null;
         resolve(blob);
@@ -301,191 +250,220 @@ export const useTranscription = ({
 
       recorder.stop();
     });
-  }, []);
+  }, [addDebugLog]);
 
-  // === MOBILE VAD (BLOB-BASED) ===
-  // Главная логика определения речи для мобильных устройств
-  const startMobileVAD = useCallback(() => {
-    if (mobileVADIntervalRef.current) return;
-
-    addDebugLog(`[MobileVAD] 🎤 Starting blob-based voice detection`);
-    addDebugLog(`[MobileVAD] Settings: threshold=${MOBILE_SPEECH_THRESHOLD}%, silence=${MOBILE_SILENCE_DURATION}ms`);
-
-    mobileVADIntervalRef.current = window.setInterval(async () => {
-      // Пропускаем если TTS активен (эхо-подавление)
-      if (isTTSActiveRef.current) {
-        if (speechActiveRef.current) {
-          addDebugLog(`[MobileVAD] 🔇 TTS active - clearing speech buffer`);
-          speechChunksRef.current = [];
-          speechActiveRef.current = false;
-          silenceStartTimeRef.current = 0;
-        }
-        return;
+  // === SCRIPT PROCESSOR VAD (работает на iOS!) ===
+  const setupScriptProcessorVAD = useCallback((stream: MediaStream) => {
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      audioContextRef.current = new AudioContextClass();
+      
+      // Резюмируем контекст (важно для iOS)
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume().then(() => {
+          addDebugLog(`[VAD] AudioContext resumed`);
+        });
       }
 
-      // Пропускаем если уже обрабатываем предыдущую речь
-      if (isProcessingRef.current) return;
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      
+      // ScriptProcessorNode дает доступ к raw PCM данным
+      // Используем размер буфера 4096 для баланса между latency и производительностью
+      const scriptProcessor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+      scriptProcessorRef.current = scriptProcessor;
 
-      // Получаем новые chunks с момента последней проверки
-      const currentChunks = recordedChunksRef.current;
-      const newChunks = currentChunks.slice(lastChunkIndexRef.current);
-      lastChunkIndexRef.current = currentChunks.length;
+      let lastLogTime = 0;
+      let frameCount = 0;
 
-      if (newChunks.length === 0) return;
-
-      // Анализируем громкость последнего chunk
-      const latestChunk = newChunks[newChunks.length - 1];
-      const volumeLevel = await checkAudioVolume(latestChunk);
-
-      const now = Date.now();
-      const isSpeaking = volumeLevel > MOBILE_SPEECH_THRESHOLD;
-
-      // Логирование каждую секунду для отладки
-      if (Math.floor(now / 1000) !== Math.floor((now - MOBILE_VAD_INTERVAL) / 1000)) {
-        addDebugLog(`[MobileVAD] 📊 Vol: ${volumeLevel.toFixed(2)}% | Speaking: ${isSpeaking} | Active: ${speechActiveRef.current}`);
-      }
-
-      if (isSpeaking) {
-        // === ОБНАРУЖЕНА РЕЧЬ ===
-        if (!speechActiveRef.current) {
-          addDebugLog(`[MobileVAD] 🎤 Speech STARTED (vol: ${volumeLevel.toFixed(2)}%)`);
-          speechActiveRef.current = true;
-          speechStartTimeRef.current = now;
-          speechChunksRef.current = [];
-          onSpeechStart?.();
-        }
-        
-        // Добавляем chunks в буфер речи
-        speechChunksRef.current.push(...newChunks);
-        silenceStartTimeRef.current = 0; // Сбрасываем счетчик тишины
-        
-      } else {
-        // === ТИШИНА ===
-        if (speechActiveRef.current) {
-          // Добавляем тихие chunks (могут содержать конец слова)
-          speechChunksRef.current.push(...newChunks);
-          
-          if (!silenceStartTimeRef.current) {
-            silenceStartTimeRef.current = now;
-            addDebugLog(`[MobileVAD] 🔇 Silence started, waiting ${MOBILE_SILENCE_DURATION}ms...`);
-          }
-          
-          const silenceDuration = now - silenceStartTimeRef.current;
-          const speechDuration = now - speechStartTimeRef.current;
-          
-          // Проверяем достаточно ли длинная тишина
-          if (silenceDuration >= MOBILE_SILENCE_DURATION) {
-            addDebugLog(`[MobileVAD] ✅ Speech ENDED (duration: ${speechDuration}ms, silence: ${silenceDuration}ms)`);
-            
-            // Сбрасываем состояние
+      scriptProcessor.onaudioprocess = (event) => {
+        // Пропускаем если TTS активен
+        if (isTTSActiveRef.current) {
+          if (speechActiveRef.current) {
+            addDebugLog(`[VAD] 🔇 TTS active - resetting speech state`);
             speechActiveRef.current = false;
             silenceStartTimeRef.current = 0;
-            
-            // Проверяем минимальную длительность речи
-            if (speechDuration < MOBILE_MIN_SPEECH_DURATION) {
-              addDebugLog(`[MobileVAD] ⚠️ Speech too short (${speechDuration}ms < ${MOBILE_MIN_SPEECH_DURATION}ms), skipping`);
-              speechChunksRef.current = [];
-              return;
+            recordedChunksRef.current = [];
+          }
+          return;
+        }
+
+        if (isProcessingRef.current) return;
+
+        frameCount++;
+        const now = Date.now();
+
+        // Получаем raw PCM данные
+        const inputData = event.inputBuffer.getChannelData(0);
+        
+        // Вычисляем RMS (Root Mean Square) - реальная громкость
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sum / inputData.length);
+        const volumePercent = rms * 100;
+
+        // Сохраняем текущую громкость
+        currentVolumeRef.current = volumePercent;
+
+        // Сохраняем историю громкости (последние 10 значений)
+        volumeHistoryRef.current.push(volumePercent);
+        if (volumeHistoryRef.current.length > 10) {
+          volumeHistoryRef.current.shift();
+        }
+
+        // Средняя громкость за последние измерения
+        const avgVolume = volumeHistoryRef.current.reduce((a, b) => a + b, 0) / volumeHistoryRef.current.length;
+
+        const isSpeaking = avgVolume > MOBILE_SPEECH_THRESHOLD;
+
+        // Логируем каждую секунду
+        if (now - lastLogTime >= 1000) {
+          addDebugLog(`[VAD] 📊 Vol: ${avgVolume.toFixed(2)}% (raw: ${volumePercent.toFixed(2)}%) | Speaking: ${isSpeaking} | Active: ${speechActiveRef.current}`);
+          lastLogTime = now;
+        }
+
+        if (isSpeaking) {
+          // === ОБНАРУЖЕНА РЕЧЬ ===
+          if (!speechActiveRef.current) {
+            addDebugLog(`[VAD] 🎤 Speech STARTED (vol: ${avgVolume.toFixed(2)}%)`);
+            speechActiveRef.current = true;
+            speechStartTimeRef.current = now;
+            onSpeechStart?.();
+          }
+          silenceStartTimeRef.current = 0;
+          
+        } else {
+          // === ТИШИНА ===
+          if (speechActiveRef.current) {
+            if (!silenceStartTimeRef.current) {
+              silenceStartTimeRef.current = now;
+              addDebugLog(`[VAD] 🔇 Silence started, waiting ${MOBILE_SILENCE_DURATION}ms...`);
             }
             
-            // Создаем blob из накопленных chunks
-            if (speechChunksRef.current.length > 0) {
-              const speechBlob = new Blob(speechChunksRef.current, { type: 'audio/webm' });
-              speechChunksRef.current = [];
+            const silenceDuration = now - silenceStartTimeRef.current;
+            const speechDuration = now - speechStartTimeRef.current;
+            
+            if (silenceDuration >= MOBILE_SILENCE_DURATION) {
+              addDebugLog(`[VAD] ✅ Speech ENDED (duration: ${speechDuration}ms, silence: ${silenceDuration}ms)`);
               
-              // Проверяем размер
-              if (speechBlob.size < MOBILE_MIN_AUDIO_SIZE) {
-                addDebugLog(`[MobileVAD] ⚠️ Audio too small (${speechBlob.size} < ${MOBILE_MIN_AUDIO_SIZE} bytes), skipping`);
+              speechActiveRef.current = false;
+              silenceStartTimeRef.current = 0;
+              
+              // Проверяем минимальную длительность
+              if (speechDuration < MOBILE_MIN_SPEECH_DURATION) {
+                addDebugLog(`[VAD] ⚠️ Speech too short (${speechDuration}ms < ${MOBILE_MIN_SPEECH_DURATION}ms)`);
                 return;
               }
               
-              // Финальная проверка громкости всего аудио
-              const finalVolume = await checkAudioVolume(speechBlob);
-              
-              if (finalVolume < MOBILE_SPEECH_THRESHOLD * 0.5) {
-                addDebugLog(`[MobileVAD] ⚠️ Final volume too low (${finalVolume.toFixed(2)}%), skipping`);
-                return;
-              }
-              
-              // === ОТПРАВЛЯЕМ НА ТРАНСКРИБАЦИЮ ===
-              addDebugLog(`[MobileVAD] 📤 Sending ${speechBlob.size} bytes (vol: ${finalVolume.toFixed(2)}%)`);
-              
+              // Останавливаем запись и отправляем на транскрибацию
               isProcessingRef.current = true;
               
-              try {
-                const text = await transcribeWithOpenAI(speechBlob);
-                
-                if (text?.trim()) {
-            const filteredText = filterHallucinatedText(text.trim());
+              (async () => {
+                try {
+                  const audioBlob = await stopMediaRecording();
                   
-            if (filteredText) {
-                    addDebugLog(`[MobileVAD] ✅ Transcribed: "${filteredText}"`);
-              onTranscriptionComplete(filteredText, 'openai');
+                  // Сразу перезапускаем запись
+                  if (audioStreamRef.current) {
+                    startMediaRecording(audioStreamRef.current);
                   }
+                  
+                  if (!audioBlob || audioBlob.size < MOBILE_MIN_AUDIO_SIZE) {
+                    addDebugLog(`[VAD] ⚠️ Audio too small (${audioBlob?.size || 0} bytes)`);
+                    return;
+                  }
+                  
+                  addDebugLog(`[VAD] 📤 Sending ${audioBlob.size} bytes to OpenAI...`);
+                  
+                  const text = await transcribeWithOpenAI(audioBlob);
+                  
+                  if (text?.trim()) {
+                    const filteredText = filterHallucinatedText(text.trim());
+                    
+                    if (filteredText) {
+                      addDebugLog(`[VAD] ✅ Transcribed: "${filteredText}"`);
+                      onTranscriptionComplete(filteredText, 'openai');
+                    }
+                  }
+                } catch (error: any) {
+                  addDebugLog(`[VAD] ❌ Error: ${error.message}`);
+                  // Перезапускаем запись при ошибке
+                  if (audioStreamRef.current && !mediaRecorderRef.current) {
+                    startMediaRecording(audioStreamRef.current);
+                  }
+                } finally {
+                  isProcessingRef.current = false;
                 }
-              } catch (error: any) {
-                addDebugLog(`[MobileVAD] ❌ Transcription error: ${error.message}`);
-              } finally {
-                isProcessingRef.current = false;
-              }
+              })();
             }
           }
         }
-      }
-    }, MOBILE_VAD_INTERVAL);
+      };
+
+      // Подключаем цепочку
+      source.connect(scriptProcessor);
+      scriptProcessor.connect(audioContextRef.current.destination);
+
+      addDebugLog(`[VAD] ✅ ScriptProcessor VAD started (buffer: 4096, sampleRate: ${audioContextRef.current.sampleRate})`);
+      
+    } catch (error: any) {
+      addDebugLog(`[VAD] ❌ Setup failed: ${error.message}`);
+    }
   }, [
-    checkAudioVolume, 
-    transcribeWithOpenAI, 
-    filterHallucinatedText, 
-    onTranscriptionComplete, 
-    onSpeechStart, 
-    isTTSActiveRef, 
+    isTTSActiveRef,
+    onSpeechStart,
+    onTranscriptionComplete,
+    stopMediaRecording,
+    startMediaRecording,
+    transcribeWithOpenAI,
+    filterHallucinatedText,
     addDebugLog,
-    MOBILE_VAD_INTERVAL,
     MOBILE_SPEECH_THRESHOLD,
     MOBILE_SILENCE_DURATION,
     MOBILE_MIN_SPEECH_DURATION,
     MOBILE_MIN_AUDIO_SIZE
   ]);
 
-  const stopMobileVAD = useCallback(() => {
-    if (mobileVADIntervalRef.current) {
-      addDebugLog(`[MobileVAD] 🛑 Stopping`);
-      clearInterval(mobileVADIntervalRef.current);
-      mobileVADIntervalRef.current = null;
+  const stopScriptProcessorVAD = useCallback(() => {
+    if (scriptProcessorRef.current) {
+      scriptProcessorRef.current.disconnect();
+      scriptProcessorRef.current = null;
+      addDebugLog(`[VAD] 🛑 ScriptProcessor stopped`);
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
     }
     speechActiveRef.current = false;
-    speechChunksRef.current = [];
     silenceStartTimeRef.current = 0;
+    volumeHistoryRef.current = [];
   }, [addDebugLog]);
 
-  // === VOLUME MONITORING FOR DESKTOP (Safari interruption) ===
+  // === VOLUME MONITORING FOR DESKTOP ===
   const startVolumeMonitoring = useCallback(async (stream: MediaStream) => {
-    // Только для десктопа - на мобильных используем blob-based VAD
     if (isMobileDevice()) return;
 
     try {
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-      audioContextRef.current = new AudioContextClass();
+      const tempContext = new AudioContextClass();
       
-      if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
+      if (tempContext.state === 'suspended') {
+        await tempContext.resume();
       }
 
-      const source = audioContextRef.current.createMediaStreamSource(stream);
-      const analyser = audioContextRef.current.createAnalyser();
+      const source = tempContext.createMediaStreamSource(stream);
+      const analyser = tempContext.createAnalyser();
       analyser.fftSize = 256;
       source.connect(analyser);
 
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      
+
       const checkVolume = () => {
         if (!recognitionActiveRef.current) return;
         
-          analyser.getByteFrequencyData(dataArray);
-          const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
 
-        // Safari interruption logic
         if (!hasEchoProblems()) {
           const threshold = isTTSActiveRef.current 
             ? SAFARI_VOICE_THRESHOLD + 15 
@@ -497,7 +475,7 @@ export const useTranscription = ({
               const now = Date.now();
               if (now - lastSafariSpeechTimeRef.current > SAFARI_DEBOUNCE) {
                 lastSafariSpeechTimeRef.current = now;
-                  onInterruption?.();
+                onInterruption?.();
                 safariSpeechCountRef.current = 0;
               }
             }
@@ -510,7 +488,6 @@ export const useTranscription = ({
       };
       
       volumeMonitorRef.current = requestAnimationFrame(checkVolume);
-      addDebugLog(`[Volume] ✅ Desktop monitoring started`);
     } catch (error: any) {
       addDebugLog(`[Volume] ❌ Failed: ${error.message}`);
     }
@@ -521,10 +498,6 @@ export const useTranscription = ({
       cancelAnimationFrame(volumeMonitorRef.current);
       volumeMonitorRef.current = null;
     }
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
   }, []);
 
   // === MAIN INITIALIZATION ===
@@ -534,28 +507,24 @@ export const useTranscription = ({
     await checkMicrophonePermissions();
     lastProcessedTextRef.current = '';
 
-    // Device detection
     const ios = isIOSDevice();
     const android = isAndroidDevice();
     const mobile = isMobileDevice();
     setIsIOS(ios);
 
-    // API support check
     const speechRecognitionSupport = !!(window as any).SpeechRecognition || 
                                       !!(window as any).webkitSpeechRecognition;
 
     addDebugLog(`[Device] iOS: ${ios}, Android: ${android}, Mobile: ${mobile}`);
     addDebugLog(`[API] SpeechRecognition: ${speechRecognitionSupport}`);
 
-    // Determine strategy
     const shouldForceOpenAI = ios || android || !speechRecognitionSupport;
     
-    addDebugLog(`[Strategy] ${shouldForceOpenAI ? '📱 OpenAI Mode (Mobile VAD)' : '💻 Browser Mode'}`);
+    addDebugLog(`[Strategy] ${shouldForceOpenAI ? '📱 OpenAI Mode (ScriptProcessor VAD)' : '💻 Browser Mode'}`);
 
     setForceOpenAI(shouldForceOpenAI);
     if (shouldForceOpenAI) setTranscriptionMode('openai');
 
-    // Get microphone access
     try {
       const constraints = mobile ? {
         audio: {
@@ -570,7 +539,6 @@ export const useTranscription = ({
       addDebugLog(`[Mic] 🎤 Requesting access...`);
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       
-      // Log track info
       const tracks = stream.getAudioTracks();
       addDebugLog(`[Mic] ✅ Access granted (${tracks.length} tracks)`);
       tracks.forEach((track, i) => {
@@ -580,153 +548,152 @@ export const useTranscription = ({
       audioStreamRef.current = stream;
       setMicrophoneAccessGranted(true);
 
-      // Start recording
-      startMediaRecording(stream);
-
-      // === MOBILE: Use blob-based VAD ===
+      // === MOBILE: ScriptProcessor VAD + MediaRecorder ===
       if (ios || android) {
-        addDebugLog(`[Init] 📱 Starting Mobile VAD system`);
-        startMobileVAD();
+        addDebugLog(`[Init] 📱 Starting ScriptProcessor VAD for mobile`);
+        
+        // Сначала запускаем запись
+        startMediaRecording(stream);
+        
+        // Затем VAD для анализа громкости
+        setupScriptProcessorVAD(stream);
+        
         recognitionActiveRef.current = true;
         addDebugLog(`[Init] ✅ Mobile VAD active - speak to test!`);
         return;
       }
 
-      // === DESKTOP: Volume monitoring + Browser Recognition ===
+      // === DESKTOP ===
       startVolumeMonitoring(stream);
+      startMediaRecording(stream);
 
       if (!shouldForceOpenAI) {
         addDebugLog(`[Init] 💻 Starting Browser SpeechRecognition`);
         
         const SpeechRecognition = (window as any).SpeechRecognition || 
                                   (window as any).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
+        const recognition = new SpeechRecognition();
         
-      recognition.lang = "ru-RU";
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.maxAlternatives = 1;
+        recognition.lang = "ru-RU";
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
 
-      recognition.onresult = (event: any) => {
-          // Echo prevention for Chrome
-        if (hasEchoProblems() && isTTSActiveRef.current) return;
+        recognition.onresult = (event: any) => {
+          if (hasEchoProblems() && isTTSActiveRef.current) return;
 
-        let finalTranscript = "";
-        let interimTranscript = "";
+          let finalTranscript = "";
+          let interimTranscript = "";
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const result = event.results[i];
             if (result.isFinal) {
               finalTranscript += result[0].transcript;
             } else {
               interimTranscript += result[0].transcript;
             }
-        }
+          }
 
-        if (finalTranscript.trim()) {
-          const trimmedText = finalTranscript.trim();
-          const lastText = lastProcessedTextRef.current;
+          if (finalTranscript.trim()) {
+            const trimmedText = finalTranscript.trim();
+            const lastText = lastProcessedTextRef.current;
 
-            // Dedupe logic
             const isExtension = lastText && 
                                trimmedText.startsWith(lastText) && 
                                (trimmedText.length - lastText.length) > 5;
-          const lengthDiff = Math.abs(trimmedText.length - (lastText?.length || 0));
-          const maxLength = Math.max(trimmedText.length, lastText?.length || 0);
-          const isMinorCorrection = lastText && (lengthDiff / maxLength) < 0.2 && lengthDiff < 50;
+            const lengthDiff = Math.abs(trimmedText.length - (lastText?.length || 0));
+            const maxLength = Math.max(trimmedText.length, lastText?.length || 0);
+            const isMinorCorrection = lastText && (lengthDiff / maxLength) < 0.2 && lengthDiff < 50;
 
-          if (isExtension || isMinorCorrection || lastProcessedTextRef.current === trimmedText) {
+            if (isExtension || isMinorCorrection || lastProcessedTextRef.current === trimmedText) {
+              lastProcessedTextRef.current = trimmedText;
+              return;
+            }
+
             lastProcessedTextRef.current = trimmedText;
-            return;
-          }
-
-          lastProcessedTextRef.current = trimmedText;
-          if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
-          browserRetryCountRef.current = 0;
+            if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+            browserRetryCountRef.current = 0;
             
             addDebugLog(`[Browser] ✅ Final: "${trimmedText}"`);
-          onTranscriptionComplete(trimmedText, 'browser');
+            onTranscriptionComplete(trimmedText, 'browser');
             
-        } else if (interimTranscript.trim()) {
-          if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
+          } else if (interimTranscript.trim()) {
+            if (speechTimeoutRef.current) clearTimeout(speechTimeoutRef.current);
             
-          speechTimeoutRef.current = window.setTimeout(() => {
-            if (hasEchoProblems() && isTTSActiveRef.current) return;
+            speechTimeoutRef.current = window.setTimeout(() => {
+              if (hasEchoProblems() && isTTSActiveRef.current) return;
               
-            const trimmedInterim = interimTranscript.trim();
+              const trimmedInterim = interimTranscript.trim();
               addDebugLog(`[Browser] ⏱️ Interim timeout: "${trimmedInterim}"`);
-            onTranscriptionComplete(trimmedInterim, 'browser');
-          }, 1500);
-        }
-      };
+              onTranscriptionComplete(trimmedInterim, 'browser');
+            }, 1500);
+          }
+        };
 
-      recognition.onspeechstart = () => {
-        lastProcessedTextRef.current = '';
-        onSpeechStart?.();
+        recognition.onspeechstart = () => {
+          lastProcessedTextRef.current = '';
+          onSpeechStart?.();
           
-          // Safari interruption
-        if (!hasEchoProblems() && isTTSActiveRef.current) {
+          if (!hasEchoProblems() && isTTSActiveRef.current) {
             const now = Date.now();
             if (now - lastSafariSpeechTimeRef.current > SAFARI_DEBOUNCE) {
               lastSafariSpeechTimeRef.current = now;
-            onInterruption?.();
+              onInterruption?.();
+            }
           }
-        }
-      };
+        };
 
-      recognition.onerror = async (event: any) => {
-        if (event.error === 'no-speech' || event.error === 'aborted') return;
+        recognition.onerror = async (event: any) => {
+          if (event.error === 'no-speech' || event.error === 'aborted') return;
           
           addDebugLog(`[Browser] ❌ Error: ${event.error}`);
 
-        const retryable = ['network', 'audio-capture', 'not-allowed'];
-        if (retryable.includes(event.error) && browserRetryCountRef.current < 3) {
-          browserRetryCountRef.current++;
-          setTimeout(() => {
-            if (recognitionActiveRef.current) {
-              try { recognition.start(); } catch(e) {}
-            }
-          }, 1000 * browserRetryCountRef.current);
-          return;
-        }
+          const retryable = ['network', 'audio-capture', 'not-allowed'];
+          if (retryable.includes(event.error) && browserRetryCountRef.current < 3) {
+            browserRetryCountRef.current++;
+            setTimeout(() => {
+              if (recognitionActiveRef.current) {
+                try { recognition.start(); } catch(e) {}
+              }
+            }, 1000 * browserRetryCountRef.current);
+            return;
+          }
 
-          // Fallback to OpenAI
-        if (browserRetryCountRef.current >= 3 || ['network', 'audio-capture'].includes(event.error)) {
+          if (browserRetryCountRef.current >= 3 || ['network', 'audio-capture'].includes(event.error)) {
             addDebugLog(`[Fallback] Switching to OpenAI`);
-          setTranscriptionMode('openai');
+            setTranscriptionMode('openai');
             
-          const blob = await stopMediaRecording();
-          if (blob && blob.size > 1000) {
-            const text = await transcribeWithOpenAI(blob);
-            if (text) {
+            const blob = await stopMediaRecording();
+            if (blob && blob.size > 1000) {
+              const text = await transcribeWithOpenAI(blob);
+              if (text) {
                 const filtered = filterHallucinatedText(text);
                 if (filtered) {
                   onTranscriptionComplete(filtered, 'openai');
                 }
-            } else {
-              onError?.("Не удалось распознать речь");
+              } else {
+                onError?.("Не удалось распознать речь");
+              }
             }
-          }
             
-          setTranscriptionMode('browser');
-          browserRetryCountRef.current = 0;
+            setTranscriptionMode('browser');
+            browserRetryCountRef.current = 0;
             
-            // Restart recording
             if (audioStreamRef.current) {
               startMediaRecording(audioStreamRef.current);
             }
-        }
-      };
+          }
+        };
 
-      recognition.onend = () => {
-        if (recognitionActiveRef.current && !isTTSActiveRef.current) {
-          try { recognition.start(); } catch (e) {}
-        }
-      };
+        recognition.onend = () => {
+          if (recognitionActiveRef.current && !isTTSActiveRef.current) {
+            try { recognition.start(); } catch (e) {}
+          }
+        };
 
-      recognitionRef.current = recognition;
-      recognitionActiveRef.current = true;
-      recognition.start();
+        recognitionRef.current = recognition;
+        recognitionActiveRef.current = true;
+        recognition.start();
         
         addDebugLog(`[Init] ✅ Browser recognition started`);
       }
@@ -741,13 +708,13 @@ export const useTranscription = ({
           errorMessage = "Доступ к микрофону запрещен. Разрешите в настройках браузера.";
           break;
         case 'NotFoundError':
-        errorMessage = "Микрофон не найден.";
+          errorMessage = "Микрофон не найден.";
           break;
         case 'NotReadableError':
           errorMessage = "Микрофон занят другим приложением.";
           break;
         case 'SecurityError':
-        errorMessage = "Требуется HTTPS для доступа к микрофону.";
+          errorMessage = "Требуется HTTPS для доступа к микрофону.";
           break;
       }
 
@@ -762,7 +729,7 @@ export const useTranscription = ({
     hasEchoProblems,
     startMediaRecording,
     stopMediaRecording,
-    startMobileVAD,
+    setupScriptProcessorVAD,
     startVolumeMonitoring,
     transcribeWithOpenAI,
     filterHallucinatedText,
@@ -789,7 +756,7 @@ export const useTranscription = ({
     }
     
     stopVolumeMonitoring();
-    stopMobileVAD();
+    stopScriptProcessorVAD();
     
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try { mediaRecorderRef.current.stop(); } catch(e) {}
@@ -808,9 +775,8 @@ export const useTranscription = ({
     }
     
     addDebugLog(`[Cleanup] ✅ Done`);
-  }, [stopVolumeMonitoring, stopMobileVAD, addDebugLog]);
+  }, [stopVolumeMonitoring, stopScriptProcessorVAD, addDebugLog]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return cleanup;
   }, [cleanup]);
@@ -831,8 +797,8 @@ export const useTranscription = ({
       if (recognitionRef.current) {
         try { recognitionRef.current.stop(); } catch(e) {}
       }
-      stopMobileVAD();
-    }, [stopMobileVAD, addDebugLog]),
+      stopScriptProcessorVAD();
+    }, [stopScriptProcessorVAD, addDebugLog]),
     startRecognition: useCallback(() => {
       addDebugLog(`[Recognition] ▶️ Starting`);
       recognitionActiveRef.current = true;
@@ -840,8 +806,11 @@ export const useTranscription = ({
         try { recognitionRef.current.start(); } catch(e) {}
       }
       if (isMobileDevice() && audioStreamRef.current) {
-        startMobileVAD();
-    }
-    }, [startMobileVAD, isMobileDevice, addDebugLog])
+        setupScriptProcessorVAD(audioStreamRef.current);
+        if (!mediaRecorderRef.current) {
+          startMediaRecording(audioStreamRef.current);
+        }
+      }
+    }, [setupScriptProcessorVAD, startMediaRecording, isMobileDevice, addDebugLog])
   };
 };
