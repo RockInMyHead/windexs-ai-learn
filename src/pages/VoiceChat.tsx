@@ -19,7 +19,6 @@ const DebugLogs = ({ logs, isVisible, onToggle, onClear }: {
   onToggle: () => void;
   onClear: () => void;
 }) => {
-  console.log('[DebugLogs] isVisible:', isVisible, 'logs count:', logs.length);
   if (!isVisible) return null;
 
   return (
@@ -382,25 +381,19 @@ const VoiceChat = () => {
       </div>
 
       {/* Debug Toggle Button */}
-      {(() => {
-        console.log('[UI] Render debug button - isCallActive:', isCallActive, 'showDebugLogs:', showDebugLogs);
-        return isCallActive && (
-          <div className="absolute bottom-28 left-0 right-0 flex justify-center z-40">
-          <Button
-              onClick={() => {
-                console.log('Debug button clicked!');
-                toggleDebugLogs();
-              }}
-              size="sm"
-              variant="outline"
-              className="flex items-center gap-2 text-xs bg-black/80 border-gray-600 text-gray-300 hover:bg-gray-800 hover:text-white shadow-lg backdrop-blur-sm"
-            >
-              <Bug className="w-3 h-3" />
-              {showDebugLogs ? 'Скрыть логи' : 'Показать логи'}
-          </Button>
-        </div>
-        );
-      })()}
+      {isCallActive && (
+        <div className="absolute bottom-28 left-0 right-0 flex justify-center z-40">
+        <Button
+            onClick={toggleDebugLogs}
+            size="sm"
+            variant="outline"
+            className="flex items-center gap-2 text-xs bg-black/80 border-gray-600 text-gray-300 hover:bg-gray-800 hover:text-white shadow-lg backdrop-blur-sm"
+          >
+            <Bug className="w-3 h-3" />
+            {showDebugLogs ? 'Скрыть логи' : 'Показать логи'}
+        </Button>
+      </div>
+      )}
 
       {/* Debug Logs Panel */}
       <DebugLogs

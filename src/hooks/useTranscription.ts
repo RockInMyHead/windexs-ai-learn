@@ -340,14 +340,20 @@ export const useTranscription = ({
         analyser.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
 
-        // Debug volume levels every second
-        if (Math.floor(Date.now() / 1000) % 2 === 0) {
-          addDebugLog(`[Volume] Current level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
+        // Debug volume levels only when speech is detected or very quiet
+        if (average > SPEECH_DETECTION_THRESHOLD * 1.5 || (average < 0.5 && Math.floor(Date.now() / 1000) % 5 === 0)) {
+          addDebugLog(`[Volume] Level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
         }
 
         // Speech detection for mobile devices (OpenAI mode)
         const isMobile = isIOSDevice() || isAndroidDevice();
         const isDesktop = !isMobile;
+
+        // Debug device detection once
+        if (!window.deviceDebugLogged) {
+          addDebugLog(`[Device] Mobile: ${isMobile}, Desktop: ${isDesktop}, iOS: ${isIOSDevice()}, Android: ${isAndroidDevice()}`);
+          window.deviceDebugLogged = true;
+        }
 
         if (isMobile) {
           if (average > SPEECH_DETECTION_THRESHOLD) {
@@ -397,6 +403,17 @@ export const useTranscription = ({
                 handleSpeechEnd();
               }
             }
+          }
+        }
+
+        // Fallback: if no device-specific detection worked but volume is very high
+        if (!speechActiveRef.current && average > SPEECH_DETECTION_THRESHOLD * 2) {
+          addDebugLog(`[Speech] 🚨 HIGH VOLUME detected: ${average.toFixed(1)} - forcing speech start`);
+          speechActiveRef.current = true;
+          speechEndFrameCountRef.current = 0;
+          if (speechEndTimeoutRef.current) {
+            clearTimeout(speechEndTimeoutRef.current);
+            speechEndTimeoutRef.current = null;
           }
         }
 
