@@ -46,7 +46,7 @@ export const useTranscription = ({
   const SAFARI_SPEECH_DEBOUNCE = 1000;
 
   // Speech detection constants
-  const SPEECH_DETECTION_THRESHOLD = 3.0; // Minimum volume level to detect speech
+  const SPEECH_DETECTION_THRESHOLD = 2.0; // Minimum volume level to detect speech (reduced for better detection)
   const SPEECH_END_FRAMES = 15; // Number of consecutive frames below threshold to end speech
   const SPEECH_END_PAUSE_MS = 5000; // 5 second pause after speech ends (increased for better UX)
 
@@ -340,8 +340,16 @@ export const useTranscription = ({
         analyser.getByteFrequencyData(dataArray);
         const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
 
+        // Debug volume levels every second
+        if (Math.floor(Date.now() / 1000) % 2 === 0) {
+          addDebugLog(`[Volume] Current level: ${average.toFixed(2)} (threshold: ${SPEECH_DETECTION_THRESHOLD})`);
+        }
+
         // Speech detection for mobile devices (OpenAI mode)
-        if (isIOSDevice() || isAndroidDevice()) {
+        const isMobile = isIOSDevice() || isAndroidDevice();
+        const isDesktop = !isMobile;
+
+        if (isMobile) {
           if (average > SPEECH_DETECTION_THRESHOLD) {
             // Speech detected
             if (!speechActiveRef.current) {
@@ -363,6 +371,29 @@ export const useTranscription = ({
               if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
                 // Speech has ended
                 addDebugLog(`[Speech] Speech ended (volume: ${average.toFixed(1)}), frames below threshold: ${speechEndFrameCountRef.current}`);
+                handleSpeechEnd();
+              }
+            }
+          }
+        } else if (isDesktop) {
+          // Desktop speech detection - try lower threshold if mobile detection isn't working
+          const desktopThreshold = SPEECH_DETECTION_THRESHOLD * 0.8; // 1.6 for even better detection
+          if (average > desktopThreshold) {
+            if (!speechActiveRef.current) {
+              addDebugLog(`[Speech] 🎙️ Desktop speech started (volume: ${average.toFixed(1)}, threshold: ${desktopThreshold.toFixed(1)})`);
+              speechActiveRef.current = true;
+            }
+            speechEndFrameCountRef.current = 0;
+
+            if (speechEndTimeoutRef.current) {
+              clearTimeout(speechEndTimeoutRef.current);
+              speechEndTimeoutRef.current = null;
+            }
+          } else {
+            if (speechActiveRef.current) {
+              speechEndFrameCountRef.current++;
+              if (speechEndFrameCountRef.current >= SPEECH_END_FRAMES) {
+                addDebugLog(`[Speech] Desktop speech ended (volume: ${average.toFixed(1)})`);
                 handleSpeechEnd();
               }
             }
@@ -417,14 +448,15 @@ export const useTranscription = ({
     lastProcessedTextRef.current = '';
 
     const ios = isIOSDevice();
+    const android = isAndroidDevice();
     const mobile = isMobileDevice();
     setIsIOS(ios);
 
     const speechRecognitionSupport = !!(window as any).SpeechRecognition || !!(window as any).webkitSpeechRecognition;
-    const android = isAndroidDevice();
     const shouldForceOpenAI = ios || android || !speechRecognitionSupport;
 
-    addDebugLog(`[Strategy] ${shouldForceOpenAI ? 'OpenAI Mode' : 'Browser Mode'}`);
+    addDebugLog(`[Device] iOS: ${ios}, Android: ${android}, Mobile: ${mobile}`);
+    addDebugLog(`[Strategy] ${shouldForceOpenAI ? 'OpenAI Mode (forced)' : 'Browser Mode'} - SpeechRecognition: ${speechRecognitionSupport}`);
 
     setForceOpenAI(shouldForceOpenAI);
     if (shouldForceOpenAI) setTranscriptionMode('openai');
@@ -448,6 +480,7 @@ export const useTranscription = ({
       setMicrophoneAccessGranted(true);
 
       startMediaRecording(stream);
+      addDebugLog(`[Init] Starting volume monitoring...`);
       startVolumeMonitoring(stream);
 
       if (ios || android) {
