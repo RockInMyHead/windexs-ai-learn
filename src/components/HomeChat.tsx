@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect } from "react";
-import { Send, Sparkles, Loader2 } from "lucide-react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Send, Sparkles, Loader2, Volume2, VolumeX, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import MathRenderer from "@/components/MathRenderer";
+import { useTTS } from "@/hooks/useTTS";
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
 
@@ -24,7 +25,33 @@ const HomeChat = () => {
   ]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isSoundEnabled, setIsSoundEnabled] = useState(true);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  
+  // TTS Hook
+  const { speak, stop: stopTTS, isPlaying, isSynthesizing, resetDeduplication } = useTTS();
+  
+  // Озвучка ответа AI по предложениям
+  const speakResponse = useCallback((text: string) => {
+    if (!isSoundEnabled) return;
+    
+    // Сначала останавливаем предыдущую озвучку
+    stopTTS();
+    resetDeduplication();
+    
+    // Небольшая задержка для сброса состояния
+    setTimeout(() => {
+      speak(text);
+    }, 100);
+  }, [isSoundEnabled, speak, stopTTS, resetDeduplication]);
+  
+  // Переключение звука
+  const toggleSound = useCallback(() => {
+    if (isSoundEnabled) {
+      stopTTS();
+    }
+    setIsSoundEnabled(prev => !prev);
+  }, [isSoundEnabled, stopTTS]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -74,6 +101,9 @@ const HomeChat = () => {
       };
 
       setMessages(prev => [...prev, aiMessage]);
+      
+      // Озвучиваем ответ AI
+      speakResponse(data.message);
     } catch (error) {
       console.error('Chat error:', error);
       const errorMessage: Message = {
@@ -118,9 +148,39 @@ const HomeChat = () => {
 
         <Card className="h-[600px] flex flex-col shadow-2xl animate-scale-in">
           <CardHeader className="pb-4">
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-primary" />
-              Чат с Юлией
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-primary" />
+                Чат с Юлией
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Кнопка остановки озвучки */}
+                {(isPlaying || isSynthesizing) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={stopTTS}
+                    className="h-8 px-2 animate-pulse"
+                    title="Остановить озвучку"
+                  >
+                    <Square className="w-4 h-4 text-red-500" />
+                  </Button>
+                )}
+                {/* Кнопка включения/выключения звука */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={toggleSound}
+                  className="h-8 px-2"
+                  title={isSoundEnabled ? "Выключить озвучку" : "Включить озвучку"}
+                >
+                  {isSoundEnabled ? (
+                    <Volume2 className="w-4 h-4 text-primary" />
+                  ) : (
+                    <VolumeX className="w-4 h-4 text-muted-foreground" />
+                  )}
+                </Button>
+              </div>
             </CardTitle>
           </CardHeader>
 

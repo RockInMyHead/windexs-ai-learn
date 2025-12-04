@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { psychologistAI } from '@/services/openai';
+import { convertTextForTTS } from '@/utils/textToSpeechConverter';
 
 interface UseTTSProps {
   onPlaybackStatusChange?: (isPlaying: boolean) => void;
@@ -200,6 +201,7 @@ export const useTTS = ({ onPlaybackStatusChange }: UseTTSProps = {}) => {
     console.log(`[TTS] ✅ Processing new text (ID: ${callId})`);
     lastProcessedTextRef.current = trimmedText;
 
+    // Разбиваем на предложения
     const sentences = trimmedText.split(/(?<=[.!?])\s+/u).map(s => s.trim()).filter(s => s.length > 0);
     console.log(`[TTS] 📊 Split into ${sentences.length} sentences (ID: ${callId})`);
     sentences.forEach((s, i) => {
@@ -224,9 +226,14 @@ export const useTTS = ({ onPlaybackStatusChange }: UseTTSProps = {}) => {
         }
 
         try {
-          console.log(`[TTS] 🎤 Synthesizing sentence ${i + 1}/${sentences.length} (ID: ${callId}): "${sentence.substring(0, 50)}..."`);
+          // Конвертируем математику и цифры в текст для озвучки
+          const ttsReadyText = convertTextForTTS(sentence);
+          console.log(`[TTS] 🎤 Synthesizing sentence ${i + 1}/${sentences.length} (ID: ${callId})`);
+          console.log(`[TTS]   Original: "${sentence.substring(0, 60)}..."`);
+          console.log(`[TTS]   TTS-ready: "${ttsReadyText.substring(0, 60)}..."`);
+          
           const sentenceStartTime = Date.now();
-          const audioBuffer = await psychologistAI.synthesizeSpeech(sentence);
+          const audioBuffer = await psychologistAI.synthesizeSpeech(ttsReadyText);
           const sentenceDuration = Date.now() - sentenceStartTime;
 
           if (generationIdRef.current !== myGenId) {
