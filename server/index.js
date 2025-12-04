@@ -8,6 +8,7 @@ import OpenAI from 'openai';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import multer from 'multer';
 import db from './database.js';
+import { convertTextForTTS } from './textToSpeechConverter.js';
 
 // Configure multer for audio and image file uploads
 const upload = multer({
@@ -1661,6 +1662,27 @@ app.put('/api/profile', authenticateToken, (req, res) => {
 
 // ==================== TTS API ====================
 
+// Prepare text for TTS (convert numbers and symbols to words)
+app.post('/api/tts/prepare', authenticateToken, async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: 'Текст не предоставлен' });
+    }
+
+    const preparedText = convertTextForTTS(text);
+    
+    res.json({ preparedText });
+  } catch (error) {
+    console.error('TTS prepare error:', error);
+    res.status(500).json({
+      error: 'Ошибка при подготовке текста',
+      details: error.message
+    });
+  }
+});
+
 // Generate speech using OpenAI TTS
 app.post('/api/tts', authenticateToken, async (req, res) => {
   try {
@@ -1686,15 +1708,19 @@ app.post('/api/tts', authenticateToken, async (req, res) => {
       return res.send(silentMp3);
     }
 
+    // Конвертируем текст для TTS (цифры и знаки в слова)
+    const ttsReadyText = convertTextForTTS(text);
+    
     console.log('Sending to OpenAI TTS...');
-    console.log('Text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
+    console.log('Original text:', text.substring(0, 100) + (text.length > 100 ? '...' : ''));
+    console.log('TTS-ready text:', ttsReadyText.substring(0, 100) + (ttsReadyText.length > 100 ? '...' : ''));
 
     // Generate speech using OpenAI TTS (optimized for speed)
     const mp3 = await Promise.race([
       openai.audio.speech.create({
         model: "tts-1",  // Стандартная модель для более быстрой генерации
         voice: voice, // Options: alloy, echo, fable, onyx, nova, shimmer
-        input: text.trim(),
+        input: ttsReadyText.trim(),
         response_format: "mp3",
         speed: 1.0  // Обычная скорость для комфортного прослушивания
       }),
