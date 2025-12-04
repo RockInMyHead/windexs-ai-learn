@@ -1,6 +1,5 @@
 import React from 'react';
 import { InlineMath, BlockMath } from 'react-katex';
-import 'katex/dist/katex.min.css';
 
 interface MathRendererProps {
   children: string;
@@ -13,8 +12,12 @@ export const parseMath = (text: string): React.ReactNode[] => {
   let lastIndex = 0;
 
   // Регулярные выражения для поиска математических выражений
-  // Ищем выражения в $...$ (inline) и $$...$$ (block)
-  const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
+  // Ищем выражения в разных форматах:
+  // 1. $$...$$ (block math)
+  // 2. $...$ (inline math)
+  // 3. [ ... ] (bracketed math)
+  // 4. ( ... ) (parenthesized math)
+  const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\[[^\[\]]*\]|\([^)]*\))/g;
 
   let match;
   while ((match = mathRegex.exec(text)) !== null) {
@@ -25,14 +28,31 @@ export const parseMath = (text: string): React.ReactNode[] => {
 
     const mathExpression = match[0];
     const isBlockMath = mathExpression.startsWith('$$');
+    const isBracketedMath = mathExpression.startsWith('[');
+    const isParenthesizedMath = mathExpression.startsWith('(');
 
-    // Убираем ограничители $ и $$
-    const cleanExpression = mathExpression.slice(isBlockMath ? 2 : 1, isBlockMath ? -2 : -1);
+    // Очищаем выражение от ограничителей
+    let cleanExpression: string;
+    if (isBlockMath) {
+      cleanExpression = mathExpression.slice(2, -2);
+    } else if (isBracketedMath) {
+      cleanExpression = mathExpression.slice(1, -1);
+    } else if (isParenthesizedMath) {
+      cleanExpression = mathExpression.slice(1, -1);
+    } else {
+      // inline math with $
+      cleanExpression = mathExpression.slice(1, -1);
+    }
+
+    // Очищаем выражение от лишних пробелов
+    cleanExpression = cleanExpression.trim();
 
     try {
-      if (isBlockMath) {
+      if (isBlockMath || isBracketedMath) {
+        // Блочные формулы (в скобках или $$)
         parts.push(<BlockMath key={match.index} math={cleanExpression} />);
       } else {
+        // Строчные формулы (в скобках или $)
         parts.push(<InlineMath key={match.index} math={cleanExpression} />);
       }
     } catch (error) {

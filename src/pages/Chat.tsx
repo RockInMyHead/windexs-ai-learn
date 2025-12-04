@@ -537,6 +537,30 @@ const Chat = () => {
                       </div>
                     )}
                     <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
+                    {/* Отображение прикрепленного файла */}
+                    {message.file && message.role === 'user' && (
+                      <div className="mb-3 p-2 bg-primary-foreground/10 rounded-lg">
+                        {message.file.type.startsWith('image/') ? (
+                          <div className="space-y-2">
+                            <img
+                              src={URL.createObjectURL(message.file)}
+                              alt={message.file.name}
+                              className="max-w-full max-h-64 rounded-lg object-contain"
+                            />
+                            <div className="text-xs text-primary-foreground/70">
+                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-sm">
+                            <Paperclip className="w-4 h-4 text-primary" />
+                            <span className="text-primary-foreground/70">
+                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className={`text-xs mt-2 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
                       }`}>
                       {message.timestamp.toLocaleTimeString('ru-RU', {
