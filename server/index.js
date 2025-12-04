@@ -9,16 +9,19 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import multer from 'multer';
 import db from './database.js';
 
-// Configure multer for audio file uploads
+// Configure multer for audio and image file uploads
 const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB limit
   fileFilter: (req, file, cb) => {
     console.log('File filter check:', {
       mimetype: file.mimetype,
-      originalname: file.originalname
+      originalname: file.originalname,
+      fieldname: file.fieldname
     });
-    // Accept only audio files supported by Whisper
-    if (file.mimetype.startsWith('audio/') ||
+
+    // Accept audio files supported by Whisper
+    if (file.fieldname === 'audio' && (
+      file.mimetype.startsWith('audio/') ||
       file.mimetype === 'application/octet-stream' ||
       file.originalname.endsWith('.webm') ||
       file.originalname.endsWith('.wav') ||
@@ -26,11 +29,43 @@ const upload = multer({
       file.originalname.endsWith('.m4a') ||
       file.originalname.endsWith('.mp4') ||
       file.originalname.endsWith('.flac') ||
-      file.originalname.endsWith('.ogg')) {
+      file.originalname.endsWith('.ogg')
+    )) {
+      cb(null, true);
+    }
+    // Accept image files supported by OpenAI Vision
+    else if (file.fieldname === 'image' && (
+      file.mimetype.startsWith('image/') &&
+      (file.mimetype === 'image/jpeg' ||
+       file.mimetype === 'image/png' ||
+       file.mimetype === 'image/gif' ||
+       file.mimetype === 'image/webp' ||
+       file.originalname.endsWith('.jpg') ||
+       file.originalname.endsWith('.jpeg') ||
+       file.originalname.endsWith('.png') ||
+       file.originalname.endsWith('.gif') ||
+       file.originalname.endsWith('.webp'))
+    )) {
       cb(null, true);
     } else {
-      console.error('Rejected file type:', file.mimetype);
-      cb(new Error(`Only audio files are allowed. Got: ${file.mimetype}`));
+      console.error('Rejected file type:', file.mimetype, 'for field:', file.fieldname);
+      cb(new Error(`Unsupported file type: ${file.mimetype} for field ${file.fieldname}`));
+    }
+  }
+});
+
+// Configure multer for images only (for general chat endpoint)
+const imageUpload = multer({
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit for images
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/') &&
+        (file.mimetype === 'image/jpeg' ||
+         file.mimetype === 'image/png' ||
+         file.mimetype === 'image/gif' ||
+         file.mimetype === 'image/webp')) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Only image files are allowed. Got: ${file.mimetype}`));
     }
   }
 });
@@ -1290,7 +1325,7 @@ app.get('/api/chat/general/history', authenticateToken, (req, res) => {
     const userId = req.user.userId;
 
     const messages = db.prepare(`
-      SELECT id, role, content, created_at, message_type
+      SELECT id, role, content, created_at, message_type, file_url
       FROM chat_messages
       WHERE user_id = ? AND course_id = 'general'
       ORDER BY created_at ASC
@@ -1305,7 +1340,7 @@ app.get('/api/chat/general/history', authenticateToken, (req, res) => {
   }
 });
 
-app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
+app.post('/api/chat/general', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'image', maxCount: 1 }]), async (req, res) => {
   try {
     console.log('🤖 Новый запрос к общему AI чату');
 
@@ -1330,9 +1365,10 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
     }
 
     let content, messageType = 'text';
+    let imageDescription = null;
 
     // Handle voice messages (FormData)
-    if (req.file) {
+    if (req.files && req.files.audio && req.files.audio[0]) {
       console.log('🎤 Голосовое сообщение получено');
       messageType = 'voice';
 
@@ -1342,11 +1378,11 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
         return res.status(500).json({ error: 'OpenAI API недоступен' });
       }
 
-      const audioBuffer = req.file.buffer;
+      const audioFile = req.files.audio[0];
       console.log('🎵 Транскрибация аудио...');
 
       const transcription = await openai.audio.transcriptions.create({
-        file: new File([audioBuffer], 'audio.webm', { type: 'audio/webm' }),
+        file: new File([audioFile.buffer], 'audio.webm', { type: audioFile.mimetype }),
         model: "whisper-1",
         language: "ru"
       });
@@ -1358,8 +1394,55 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
         console.log('❌ Транскрибация пуста');
         return res.status(400).json({ error: 'Не удалось распознать речь' });
       }
+    }
+    // Handle image messages (FormData)
+    else if (req.files && req.files.image && req.files.image[0]) {
+      console.log('🖼️ Изображение получено');
+      messageType = 'image';
+
+      // Analyze image with OpenAI Vision
+      if (!openai) {
+        console.error('OpenAI client not initialized');
+        return res.status(500).json({ error: 'OpenAI API недоступен' });
+      }
+
+      const imageFile = req.files.image[0];
+      console.log('👁️ Анализ изображения...');
+
+      // Convert buffer to base64
+      const base64Image = imageFile.buffer.toString('base64');
+      const dataUrl = `data:${imageFile.mimetype};base64,${base64Image}`;
+
+      const visionResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Опиши подробно, что изображено на этой фотографии. Если это математическая задача, формула, чертеж или схема - опиши их очень точно. Если это текст - перепиши его дословно. Если это график или диаграмма - объясни что они показывают."
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: dataUrl,
+                  detail: "high"
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.1
+      });
+
+      imageDescription = visionResponse.choices[0]?.message?.content || 'Не удалось проанализировать изображение';
+      content = req.body.content || '[Изображение]';
+
+      console.log('✅ Изображение проанализировано:', imageDescription.substring(0, 100) + '...');
     } else {
-      // Handle text messages (JSON)
+      // Handle text messages (JSON or FormData)
       console.log('💬 Текстовое сообщение получено');
       content = req.body.content || req.body.text;
 
@@ -1370,7 +1453,8 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
     }
 
     // Universal teacher prompt
-    const systemPrompt = `Ты - Юлия, универсальный AI-учитель. Ты помогаешь людям изучать любые темы и предметы.
+    // Universal teacher prompt
+    let systemPrompt = `Ты - Юлия, универсальный AI-учитель. Ты помогаешь людям изучать любые темы и предметы.
 
 Ты ведешь естественные разговорные уроки. Каждый урок длится около 5 минут и следует невидимой структуре: знакомство с темой → объяснение теории → практическое упражнение → обсуждение результатов → домашнее задание.
 
@@ -1400,11 +1484,18 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
 - Подготовкой к экзаменам
 - Изучением новых навыков`;
 
+    // Prepare user message content
+    let userMessageContent = content.trim();
+    if (imageDescription) {
+      userMessageContent += `\n\nОписание изображения: ${imageDescription}`;
+      systemPrompt += `\n\nПОЛЬЗОВАТЕЛЬ ПРИСЛАЛ ИЗОБРАЖЕНИЕ. Используй описание изображения для ответа на вопрос пользователя. Если изображение содержит задачу - реши её. Если формулу - объясни. Если текст - проанализируй.`;
+    }
+
     // Prepare messages for OpenAI
     console.log('📝 Подготовка сообщений для OpenAI...');
     const messages = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: content.trim() }
+      { role: 'user', content: userMessageContent }
     ];
     console.log('✅ Сообщения подготовлены');
 
@@ -1436,9 +1527,9 @@ app.post('/api/chat/general', upload.single('audio'), async (req, res) => {
       // Save user message
       const userMessageId = uuidv4();
       db.prepare(`
-        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type)
-        VALUES (?, ?, ?, 'user', ?, ?)
-      `).run(userMessageId, userId, 'general', content.trim(), messageType);
+        INSERT INTO chat_messages (id, user_id, course_id, role, content, message_type, file_url)
+        VALUES (?, ?, ?, 'user', ?, ?, ?)
+      `).run(userMessageId, userId, 'general', content.trim(), messageType, imageDescription || null);
 
       // Save AI response
       const aiMessageId = uuidv4();

@@ -92,17 +92,36 @@ const Chat = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/chat/general`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          content: messageText.trim(),
-          messageType: 'text'
-        })
-      });
+      let response;
+
+      if (selectedFile) {
+        // Отправка с файлом через FormData
+        const formData = new FormData();
+        formData.append('content', messageText.trim() || '[Изображение]');
+        formData.append('messageType', 'image');
+        formData.append('image', selectedFile);
+        formData.append('token', token);
+
+        console.log('🖼️ Sending message with image to server...');
+
+        response = await fetch(`${API_URL}/chat/general`, {
+          method: 'POST',
+          body: formData
+        });
+      } else {
+        // Отправка текстового сообщения
+        response = await fetch(`${API_URL}/chat/general`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            content: messageText.trim(),
+            messageType: 'text'
+          })
+        });
+      }
 
       if (!response.ok) {
         throw new Error('Failed to get response');
@@ -117,6 +136,13 @@ const Chat = () => {
       };
 
       setMessages(prev => [...prev, aiMessage]);
+
+      // Очищаем выбранный файл после успешной отправки
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+
     } catch (error) {
       console.error('Chat error:', error);
       const errorMessage: Message = {
@@ -484,6 +510,30 @@ const Chat = () => {
                             <Volume2 className="w-3 h-3 text-primary" />
                           )}
                         </Button>
+                      </div>
+                    )}
+                    {/* Отображение прикрепленного файла */}
+                    {message.file && message.role === 'user' && (
+                      <div className="mb-3 p-2 bg-primary-foreground/10 rounded-lg">
+                        {message.file.type.startsWith('image/') ? (
+                          <div className="space-y-2">
+                            <img
+                              src={URL.createObjectURL(message.file)}
+                              alt={message.file.name}
+                              className="max-w-full max-h-64 rounded-lg object-contain"
+                            />
+                            <div className="text-xs text-primary-foreground/70">
+                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-sm">
+                            <Paperclip className="w-4 h-4 text-primary" />
+                            <span className="text-primary-foreground/70">
+                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                        )}
                       </div>
                     )}
                     <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
