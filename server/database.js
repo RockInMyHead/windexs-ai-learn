@@ -169,5 +169,73 @@ db.exec(`
   )
 `);
 
+// Course performance per lesson
+db.exec(`
+  CREATE TABLE IF NOT EXISTS course_performance (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    course_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    grade INTEGER NOT NULL CHECK(grade >= 2 AND grade <= 5),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_course_performance_user ON course_performance(user_id);
+  CREATE INDEX IF NOT EXISTS idx_course_performance_course ON course_performance(course_id);
+`);
+
+// Create subscriptions table for payment plans
+db.exec(`
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    yookassa_payment_id TEXT,
+    started_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    auto_renew INTEGER NOT NULL DEFAULT 1,
+    lessons_limit INTEGER,
+    lessons_used INTEGER DEFAULT 0,
+    voice_sessions_limit INTEGER,
+    voice_sessions_used INTEGER DEFAULT 0,
+    free_lessons_remaining INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
+// Create payments log table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    yookassa_id TEXT UNIQUE,
+    amount REAL NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'RUB',
+    status TEXT NOT NULL,
+    plan TEXT,
+    description TEXT,
+    metadata TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
+// Create indexes for payment tables
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+  CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions(plan);
+  CREATE INDEX IF NOT EXISTS idx_payments_user_id ON payments(user_id);
+  CREATE INDEX IF NOT EXISTS idx_payments_yookassa_id ON payments(yookassa_id);
+  CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+`);
+
 export default db;
 

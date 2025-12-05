@@ -21,6 +21,9 @@ import LearningMode from "./pages/LearningMode";
 import CourseChat from "./pages/CourseChat";
 import VoiceChat from "./pages/VoiceChat";
 import Homework from "./pages/Homework";
+import Pricing from "./pages/Pricing";
+import PaymentSuccess from "./pages/PaymentSuccess";
+import Performance from "./pages/Performance";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -47,6 +50,9 @@ const App = () => (
             <Route path="/course-chat/:courseId" element={<ProtectedRoute><CourseChat /></ProtectedRoute>} />
             <Route path="/voice-chat/:courseId" element={<ProtectedRoute><VoiceChat key={`voice-chat-${Date.now()}`} /></ProtectedRoute>} />
             <Route path="/homework" element={<ProtectedRoute><Homework /></ProtectedRoute>} />
+            <Route path="/performance/:courseId" element={<ProtectedRoute><Performance /></ProtectedRoute>} />
+            <Route path="/pricing" element={<Pricing />} />
+            <Route path="/payment/success" element={<PaymentSuccess />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

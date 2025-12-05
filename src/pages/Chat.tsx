@@ -15,6 +15,9 @@ interface Message {
   content: string;
   timestamp: Date;
   file?: File;
+  fileUrl?: string;
+  fileName?: string;
+  fileType?: string;
 }
 
 const Chat = () => {
@@ -80,11 +83,16 @@ const Chat = () => {
       messageContent += `\n\n[Прикреплен файл: ${selectedFile.name}]`;
     }
 
+    const previewUrl = selectedFile ? URL.createObjectURL(selectedFile) : undefined;
+
     const userMessage: Message = {
       role: 'user',
       content: messageContent,
       timestamp: new Date(),
-      file: selectedFile
+      file: selectedFile,
+      fileUrl: previewUrl,
+      fileName: selectedFile?.name,
+      fileType: selectedFile?.type
     };
 
     setMessages(prev => [...prev, userMessage]);
@@ -474,8 +482,8 @@ const Chat = () => {
       <Navigation />
 
 
-      <main className="container mx-auto px-4 pt-24 pb-4">
-        <div className="max-w-4xl mx-auto h-[calc(100vh-8rem)] flex flex-col">
+      <main className="w-full px-3 sm:px-6 pt-20 pb-4">
+        <div className="w-full max-w-7xl mx-auto h-[calc(100vh-6rem)] flex flex-col">
           <Card className="flex-1 flex flex-col overflow-hidden">
             <div ref={scrollAreaRef} className="flex-1 overflow-y-auto p-6 space-y-4">
               {messages.map((message, index) => (
@@ -501,66 +509,44 @@ const Chat = () => {
                           variant="ghost"
                           size="sm"
                           onClick={() => speakMessage(index, message.content)}
-                          className="h-6 w-6 p-0 hover:bg-primary/10"
+                          className="h-7 px-2 text-xs font-medium hover:bg-primary/10"
                           title={speakingMessageId === index ? "Остановить озвучку" : "Озвучить сообщение"}
                         >
                           {speakingMessageId === index ? (
-                            <VolumeX className="w-3 h-3 text-primary" />
+                            <span className="text-primary">Говорю</span>
+                          ) : isLoading ? (
+                            <span className="text-primary">Думаю</span>
                           ) : (
-                            <Volume2 className="w-3 h-3 text-primary" />
+                            <span className="text-primary">Озвучить</span>
                           )}
                         </Button>
                       </div>
                     )}
-                    {/* Отображение прикрепленного файла */}
-                    {message.file && message.role === 'user' && (
+                    {/* Отображение прикрепленного файла (показываем фото в чате) */}
+                    {(message.file || message.fileUrl) && message.role === 'user' && (
                       <div className="mb-3 p-2 bg-primary-foreground/10 rounded-lg">
-                        {message.file.type.startsWith('image/') ? (
+                        {(message.fileType || message.file?.type || '').startsWith('image/') ? (
                           <div className="space-y-2">
                             <img
-                              src={URL.createObjectURL(message.file)}
-                              alt={message.file.name}
+                              src={message.fileUrl || (message.file ? URL.createObjectURL(message.file) : '')}
+                              alt={message.fileName || message.file?.name || 'image'}
                               className="max-w-full max-h-64 rounded-lg object-contain"
                             />
                             <div className="text-xs text-primary-foreground/70">
-                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                              📎 {message.fileName || message.file?.name || 'файл'}
                             </div>
                           </div>
                         ) : (
                           <div className="flex items-center gap-2 text-sm">
                             <Paperclip className="w-4 h-4 text-primary" />
                             <span className="text-primary-foreground/70">
-                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
+                              📎 {message.fileName || message.file?.name || 'файл'}
                             </span>
                           </div>
                         )}
                       </div>
                     )}
                     <MathRenderer className="whitespace-pre-wrap">{message.content}</MathRenderer>
-                    {/* Отображение прикрепленного файла */}
-                    {message.file && message.role === 'user' && (
-                      <div className="mb-3 p-2 bg-primary-foreground/10 rounded-lg">
-                        {message.file.type.startsWith('image/') ? (
-                          <div className="space-y-2">
-                            <img
-                              src={URL.createObjectURL(message.file)}
-                              alt={message.file.name}
-                              className="max-w-full max-h-64 rounded-lg object-contain"
-                            />
-                            <div className="text-xs text-primary-foreground/70">
-                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-sm">
-                            <Paperclip className="w-4 h-4 text-primary" />
-                            <span className="text-primary-foreground/70">
-                              📎 {message.file.name} ({(message.file.size / 1024).toFixed(1)} KB)
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
                     <div className={`text-xs mt-2 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
                       }`}>
                       {message.timestamp.toLocaleTimeString('ru-RU', {

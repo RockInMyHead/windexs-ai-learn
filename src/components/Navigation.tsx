@@ -1,5 +1,5 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BookOpen, GraduationCap, MessageSquare, Trophy, FileText, User, LogOut, LogIn, Menu, X } from "lucide-react";
+import { BookOpen, GraduationCap, MessageSquare, Trophy, FileText, User, LogOut, LogIn, Menu, X, CreditCard } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
@@ -20,6 +20,7 @@ const Navigation = () => {
     { path: "/chat", label: "Чат", icon: MessageSquare },
     { path: "/achievements", label: "Достижения", icon: Trophy },
     { path: "/exams", label: "Экзамены", icon: FileText },
+    { path: "/pricing", label: "Тарифы", icon: CreditCard },
   ];
 
   const handleLogout = async () => {

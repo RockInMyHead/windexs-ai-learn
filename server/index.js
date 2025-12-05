@@ -7,8 +7,68 @@ import { v4 as uuidv4 } from 'uuid';
 import OpenAI from 'openai';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import multer from 'multer';
+import fetch from 'node-fetch';
+import crypto from 'crypto';
 import db from './database.js';
 import { convertTextForTTS } from './textToSpeechConverter.js';
+
+// ==================== Payment Configuration ====================
+const YOOKASSA_SHOP_ID = process.env.YOOKASSA_SHOP_ID || '1183996';
+const YOOKASSA_SECRET_KEY = process.env.YOOKASSA_SECRET_KEY || 'live_OTmJmdMHX6ysyUcUpBz5kt-dmSq1pT-Y5gLgmpT1jXg';
+const PAYMENT_RETURN_URL = process.env.PAYMENT_RETURN_URL || 'https://teacher.windexs.ru/payment/success';
+
+// Pricing plans for educational platform
+// Новый набор тарифов: только голосовые уроки и премиум-улучшения чата
+const PAYMENT_PLANS = {
+  free_trial: {
+    price: 0,
+    lessons: 1,
+    voiceSessions: 1,
+    type: 'free_trial',
+    name: 'Пробный период',
+    description: '1 чат-урок + 1 голосовой урок бесплатно'
+  },
+  voice_single: {
+    price: 1,
+    lessons: 0,
+    voiceSessions: 1,
+    type: 'one_time',
+    name: '1 голосовой урок',
+    description: 'Одна голосовая сессия с преподавателем'
+  },
+  voice_four: {
+    price: 1,
+    lessons: 0,
+    voiceSessions: 4,
+    type: 'one_time',
+    name: '4 голосовых урока',
+    description: 'Пакет из четырех голосовых сессий'
+  },
+  premium: {
+    price: 1,
+    lessons: 0,
+    voiceSessions: null, // безлимитные голосовые сессии
+    type: 'premium',
+    name: 'Премиум',
+    description: 'Озвучка сообщений учителя и улучшенные ответы в чате'
+  }
+};
+
+// ==================== Achievements Configuration ====================
+const ACHIEVEMENTS = [
+  { key: 'first_message', title: 'Первый шаг', description: 'Отправьте первое сообщение', metric: 'messages', target: 1, points: 10 },
+  { key: 'five_messages', title: 'В диалоге', description: 'Отправьте 5 сообщений', metric: 'messages', target: 5, points: 15 },
+  { key: 'ten_messages', title: 'Постоянство', description: 'Отправьте 10 сообщений', metric: 'messages', target: 10, points: 20 },
+  { key: 'first_course', title: 'Первый курс', description: 'Добавьте первый курс', metric: 'courses', target: 1, points: 20 },
+  { key: 'three_courses', title: 'Учёба в радость', description: 'Добавьте 3 курса', metric: 'courses', target: 3, points: 30 },
+  { key: 'first_voice', title: 'Голос знай!', description: 'Отправьте первое голосовое сообщение', metric: 'voice_messages', target: 1, points: 20 },
+  { key: 'streak_3', title: '3 дня подряд', description: 'Занимайтесь 3 дня подряд', metric: 'streak', target: 3, points: 30 },
+  { key: 'streak_7', title: '7 дней подряд', description: 'Занимайтесь 7 дней подряд', metric: 'streak', target: 7, points: 50 },
+  { key: 'homework_first', title: 'Первое ДЗ', description: 'Отправьте первое домашнее задание', metric: 'homework_submitted', target: 1, points: 25 },
+  { key: 'homework_done', title: 'Готово!', description: 'Выполните домашнее задание', metric: 'homework_completed', target: 1, points: 40 },
+  { key: 'course_progress', title: 'Вперед к знаниям', description: 'Доведите любой курс до 50%', metric: 'course_progress_50', target: 50, points: 40 },
+  { key: 'power_user', title: 'Вершина активности', description: 'Отправьте 30 сообщений', metric: 'messages', target: 30, points: 60 }
+];
 
 // Configure multer for audio and image file uploads
 const upload = multer({
@@ -111,8 +171,20 @@ if (OPENAI_API_KEY) {
 // Middleware
 app.use(cors({
   origin: function (origin, callback) {
+    console.log('🔒 CORS check for origin:', origin);
+
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
+
+    // Allow localhost for development
+    if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+      return callback(null, true);
+    }
+
+    // Allow file:// protocol for local development
+    if (origin.startsWith('file://')) {
+      return callback(null, true);
+    }
 
     // Allow production domain
     if (origin === 'https://teacher.windexs.ru') {
@@ -124,6 +196,7 @@ app.use(cors({
       return callback(null, true);
     }
 
+    console.log('🚫 CORS blocked origin:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true
@@ -175,6 +248,107 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
+// ==================== Helpers: Achievements ====================
+const getUserChatStats = (userId) => {
+  const messagesCount = db.prepare(`
+    SELECT COUNT(*) as count FROM chat_messages WHERE user_id = ?
+  `).get(userId)?.count || 0;
+
+  const voiceMessagesCount = db.prepare(`
+    SELECT COUNT(*) as count FROM chat_messages WHERE user_id = ? AND message_type = 'voice'
+  `).get(userId)?.count || 0;
+
+  // streak: количество подряд дней (по дате сообщений)
+  const days = db.prepare(`
+    SELECT DATE(created_at) as d FROM chat_messages WHERE user_id = ? GROUP BY DATE(created_at) ORDER BY d DESC
+  `).all(userId).map(r => r.d);
+
+  let streak = 0;
+  const today = new Date().toISOString().slice(0, 10);
+  let currentDate = new Date(today);
+
+  for (const d of days) {
+    const day = new Date(d + 'T00:00:00Z');
+    if (day.toISOString().slice(0, 10) === currentDate.toISOString().slice(0, 10)) {
+      streak += 1;
+      currentDate.setDate(currentDate.getDate() - 1);
+    } else if (day < currentDate) {
+      break;
+    }
+  }
+
+  return { messagesCount, voiceMessagesCount, streak };
+};
+
+const getUserCourseStats = (userId) => {
+  const coursesCount = db.prepare(`
+    SELECT COUNT(*) as count FROM user_courses WHERE user_id = ?
+  `).get(userId)?.count || 0;
+
+  // Максимальный прогресс по курсам
+  const courseProgress = db.prepare(`
+    SELECT MAX(progress) as max_progress FROM user_courses WHERE user_id = ?
+  `).get(userId)?.max_progress || 0;
+
+  return { coursesCount, courseProgress };
+};
+
+const getUserHomeworkStats = (userId) => {
+  const submitted = db.prepare(`
+    SELECT COUNT(*) as count FROM homework WHERE user_id = ? AND status IN ('submitted','checked','completed')
+  `).get(userId)?.count || 0;
+
+  const completed = db.prepare(`
+    SELECT COUNT(*) as count FROM homework WHERE user_id = ? AND status = 'completed'
+  `).get(userId)?.count || 0;
+
+  return { submitted, completed };
+};
+
+const buildAchievementsForUser = (userId) => {
+  const chatStats = getUserChatStats(userId);
+  const courseStats = getUserCourseStats(userId);
+  const hwStats = getUserHomeworkStats(userId);
+
+  const metrics = {
+    messages: chatStats.messagesCount,
+    voice_messages: chatStats.voiceMessagesCount,
+    streak: chatStats.streak,
+    courses: courseStats.coursesCount,
+    course_progress_50: courseStats.courseProgress,
+    homework_submitted: hwStats.submitted,
+    homework_completed: hwStats.completed
+  };
+
+  const achievements = ACHIEVEMENTS.map((a) => {
+    const current = metrics[a.metric] || 0;
+    const unlocked = current >= a.target;
+    const progress = Math.min(100, Math.round((current / a.target) * 100));
+    return {
+      key: a.key,
+      title: a.title,
+      description: a.description,
+      unlocked,
+      progress,
+      target: a.target,
+      current,
+      points: a.points,
+      date: unlocked ? new Date().toISOString() : null
+    };
+  });
+
+  const unlockedCount = achievements.filter(a => a.unlocked).length;
+  const totalPoints = achievements.filter(a => a.unlocked).reduce((sum, a) => sum + a.points, 0);
+
+  return {
+    stats: {
+      totalAchievements: `${unlockedCount}/${ACHIEVEMENTS.length}`,
+      streak: chatStats.streak,
+      points: totalPoints
+    },
+    achievements
+  };
+};
 // Register
 app.post('/api/auth/register', async (req, res) => {
   try {
@@ -309,7 +483,7 @@ app.put('/api/auth/profile', authenticateToken, async (req, res) => {
     }
 
     if (updates.length > 0) {
-      updates.push('updated_at = datetime("now")');
+      updates.push("updated_at = datetime('now')");
       values.push(userId);
       db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
     }
@@ -344,7 +518,7 @@ app.put('/api/auth/password', authenticateToken, async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    db.prepare('UPDATE users SET password = ?, updated_at = datetime("now") WHERE id = ?').run(hashedPassword, userId);
+    db.prepare("UPDATE users SET password = ?, updated_at = datetime('now') WHERE id = ?").run(hashedPassword, userId);
 
     res.json({ message: 'Пароль успешно изменен' });
   } catch (error) {
@@ -417,7 +591,7 @@ app.post('/api/courses', authenticateToken, (req, res) => {
       // Update existing course
       db.prepare(`
         UPDATE user_courses 
-        SET updated_at = datetime("now")
+        SET updated_at = datetime('now')
         WHERE id = ?
       `).run(existingCourse.id);
 
@@ -455,7 +629,7 @@ app.put('/api/courses/:courseId', authenticateToken, (req, res) => {
       return res.status(404).json({ error: 'Курс не найден' });
     }
 
-    const updates = ['updated_at = datetime("now")'];
+    const updates = ["updated_at = datetime('now')"];
     const values = [];
 
     if (progress !== undefined) {
@@ -901,7 +1075,7 @@ function ensureCourseExists(userId, courseId) {
 }
 
 // Send message and get AI response (streaming)
-app.post('/api/chat/:courseId/message', upload.single('audio'), async (req, res) => {
+app.post('/api/chat/:courseId/message', authenticateToken, upload.single('audio'), async (req, res) => {
   try {
     console.log('📨 Новый запрос к /api/chat/:courseId/message');
     console.log('👤 User ID:', req.user?.userId);
@@ -1289,9 +1463,9 @@ app.put('/api/homework/:homeworkId', authenticateToken, (req, res) => {
       values.push(status);
 
       if (status === 'submitted') {
-        updates.push('submitted_at = datetime("now")');
+        updates.push("submitted_at = datetime('now')");
       } else if (status === 'checked' || status === 'completed') {
-        updates.push('checked_at = datetime("now")');
+        updates.push("checked_at = datetime('now')");
       }
     }
     if (score !== undefined) {
@@ -1625,7 +1799,7 @@ app.put('/api/profile', authenticateToken, (req, res) => {
     // Ensure profile exists
     getOrCreateUserProfile(userId);
 
-    const updates = ['updated_at = datetime("now")'];
+    const updates = ["updated_at = datetime('now')"];
     const values = [];
 
     if (learningStyle) {
@@ -1954,6 +2128,707 @@ app.post('/api/speech', authenticateToken, async (req, res) => {
       error: 'Ошибка при синтезе речи',
       details: error.message
     });
+  }
+});
+
+// ==================== Payment API Endpoints ====================
+
+// Get available payment plans
+app.get('/api/payments/plans', (req, res) => {
+  try {
+    const plans = Object.entries(PAYMENT_PLANS).map(([id, plan]) => ({
+      id,
+      ...plan
+    }));
+    res.json({ plans });
+  } catch (error) {
+    console.error('Get plans error:', error);
+    res.status(500).json({ error: 'Ошибка получения тарифов' });
+  }
+});
+
+// Get user subscription info
+app.get('/api/payments/subscription', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    
+    const subscription = db.prepare(`
+      SELECT * FROM subscriptions 
+      WHERE user_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId);
+
+    if (!subscription) {
+      return res.json({
+        hasSubscription: false,
+        plan: null,
+        lessonsRemaining: 0,
+        voiceSessionsRemaining: 0
+      });
+    }
+
+    // Check if subscription is expired (for monthly plans)
+    if (subscription.expires_at && Date.now() > subscription.expires_at) {
+      db.prepare(`UPDATE subscriptions SET status = 'expired' WHERE id = ?`).run(subscription.id);
+      return res.json({
+        hasSubscription: false,
+        plan: null,
+        lessonsRemaining: 0,
+        voiceSessionsRemaining: 0
+      });
+    }
+
+    const planConfig = PAYMENT_PLANS[subscription.plan];
+    const isUnlimited = subscription.plan === 'unlimited_monthly' || subscription.plan === 'premium' || planConfig?.voiceSessions === null;
+
+    let lessonsRemaining, voiceSessionsRemaining;
+    
+    if (subscription.plan === 'free_trial') {
+      const freeRemaining = Math.max(
+        subscription.free_lessons_remaining || 0,
+        subscription.lessons_limit || 0,
+        planConfig?.lessons || 0
+      );
+      lessonsRemaining = freeRemaining;
+      voiceSessionsRemaining = Math.max(
+        0,
+        (subscription.voice_sessions_limit || planConfig?.voiceSessions || 0) - (subscription.voice_sessions_used || 0)
+      );
+    } else if (isUnlimited) {
+      lessonsRemaining = -1; // unlimited
+      voiceSessionsRemaining = -1; // unlimited
+    } else {
+      lessonsRemaining = Math.max(0, (subscription.lessons_limit || 0) - (subscription.lessons_used || 0));
+      voiceSessionsRemaining = Math.max(0, (subscription.voice_sessions_limit || 0) - (subscription.voice_sessions_used || 0));
+    }
+
+    res.json({
+      hasSubscription: true,
+      plan: subscription.plan,
+      planName: planConfig?.name || subscription.plan,
+      lessonsRemaining,
+      voiceSessionsRemaining,
+      isUnlimited,
+      expiresAt: subscription.expires_at,
+      startedAt: subscription.started_at
+    });
+  } catch (error) {
+    console.error('Get subscription error:', error);
+    res.status(500).json({ error: 'Ошибка получения подписки' });
+  }
+});
+
+// Check access to lessons/voice
+app.get('/api/payments/access/:feature', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { feature } = req.params;
+
+    const subscription = db.prepare(`
+      SELECT * FROM subscriptions 
+      WHERE user_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId);
+
+    if (!subscription) {
+      return res.json({
+        hasAccess: false,
+        reason: 'no_subscription',
+        remaining: 0
+      });
+    }
+
+    // Check expiration for monthly plans
+    if (subscription.expires_at && Date.now() > subscription.expires_at) {
+      return res.json({
+        hasAccess: false,
+        reason: 'subscription_expired',
+        remaining: 0
+      });
+    }
+
+    const isUnlimited = subscription.plan === 'unlimited_monthly' || subscription.plan === 'premium' || PAYMENT_PLANS[subscription.plan]?.voiceSessions === null;
+
+    if (feature === 'lessons') {
+      if (isUnlimited) {
+        return res.json({ hasAccess: true, remaining: -1, isUnlimited: true });
+      }
+      
+      let remaining;
+      if (subscription.plan === 'free_trial') {
+        remaining = subscription.free_lessons_remaining || 0;
+      } else {
+        remaining = Math.max(0, (subscription.lessons_limit || 0) - (subscription.lessons_used || 0));
+      }
+
+      return res.json({
+        hasAccess: remaining > 0,
+        remaining,
+        total: subscription.lessons_limit || 0,
+        used: subscription.lessons_used || 0
+      });
+    }
+
+    if (feature === 'voice') {
+      if (isUnlimited) {
+        return res.json({ hasAccess: true, remaining: -1, isUnlimited: true });
+      }
+
+      const limit = subscription.voice_sessions_limit;
+      const used = subscription.voice_sessions_used || 0;
+      const remaining = limit === null || limit === undefined
+        ? -1
+        : Math.max(0, limit - used);
+
+      return res.json({
+        hasAccess: remaining === -1 ? true : remaining > 0,
+        remaining,
+        total: limit || 0,
+        used
+      });
+    }
+
+    res.json({ hasAccess: false, reason: 'unknown_feature' });
+  } catch (error) {
+    console.error('Check access error:', error);
+    res.status(500).json({ error: 'Ошибка проверки доступа' });
+  }
+});
+
+// Use a lesson (decrement counter)
+app.post('/api/payments/use-lesson', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const subscription = db.prepare(`
+      SELECT * FROM subscriptions 
+      WHERE user_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId);
+
+    if (!subscription) {
+      return res.status(403).json({ error: 'Нет активной подписки', code: 'no_subscription' });
+    }
+
+    // Check expiration
+    if (subscription.expires_at && Date.now() > subscription.expires_at) {
+      return res.status(403).json({ error: 'Подписка истекла', code: 'subscription_expired' });
+    }
+
+    // Unlimited plan doesn't decrement
+    if (subscription.plan === 'unlimited_monthly') {
+      return res.json({ success: true, remaining: -1, isUnlimited: true });
+    }
+
+    // Free trial uses different column
+    if (subscription.plan === 'free_trial') {
+      if (subscription.free_lessons_remaining <= 0) {
+        return res.status(403).json({ error: 'Бесплатные уроки закончились', code: 'no_lessons_left' });
+      }
+
+      db.prepare(`
+        UPDATE subscriptions 
+        SET free_lessons_remaining = free_lessons_remaining - 1, updated_at = ?
+        WHERE id = ?
+      `).run(Date.now(), subscription.id);
+
+      return res.json({ 
+        success: true, 
+        remaining: subscription.free_lessons_remaining - 1 
+      });
+    }
+
+    // Paid plan
+    const remaining = (subscription.lessons_limit || 0) - (subscription.lessons_used || 0);
+    if (remaining <= 0) {
+      return res.status(403).json({ error: 'Уроки закончились', code: 'no_lessons_left' });
+    }
+
+    db.prepare(`
+      UPDATE subscriptions 
+      SET lessons_used = lessons_used + 1, updated_at = ?
+      WHERE id = ?
+    `).run(Date.now(), subscription.id);
+
+    res.json({ success: true, remaining: remaining - 1 });
+  } catch (error) {
+    console.error('Use lesson error:', error);
+    res.status(500).json({ error: 'Ошибка списания урока' });
+  }
+});
+
+// Use a voice session (decrement counter)
+app.post('/api/payments/use-voice', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const subscription = db.prepare(`
+      SELECT * FROM subscriptions 
+      WHERE user_id = ? AND status = 'active'
+      ORDER BY created_at DESC LIMIT 1
+    `).get(userId);
+
+    if (!subscription) {
+      return res.status(403).json({ error: 'Нет активной подписки', code: 'no_subscription' });
+    }
+
+    if (subscription.expires_at && Date.now() > subscription.expires_at) {
+      return res.status(403).json({ error: 'Подписка истекла', code: 'subscription_expired' });
+    }
+
+    if (subscription.plan === 'unlimited_monthly' || subscription.plan === 'premium' || PAYMENT_PLANS[subscription.plan]?.voiceSessions === null) {
+      return res.json({ success: true, remaining: -1, isUnlimited: true });
+    }
+
+    const limit = subscription.voice_sessions_limit;
+    const used = subscription.voice_sessions_used || 0;
+    const remaining = limit === null || limit === undefined ? -1 : (limit - used);
+
+    if (remaining !== -1 && remaining <= 0) {
+      return res.status(403).json({ error: 'Голосовые сессии закончились', code: 'no_voice_left' });
+    }
+
+    if (remaining !== -1) {
+      db.prepare(`
+        UPDATE subscriptions 
+        SET voice_sessions_used = voice_sessions_used + 1, updated_at = ?
+        WHERE id = ?
+      `).run(Date.now(), subscription.id);
+    }
+
+    res.json({ success: true, remaining: remaining === -1 ? -1 : remaining - 1 });
+  } catch (error) {
+    console.error('Use voice session error:', error);
+    res.status(500).json({ error: 'Ошибка списания голосовой сессии' });
+  }
+});
+
+// Create payment via YooKassa
+app.post('/api/payments/create', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { plan } = req.body;
+
+    const planConfig = PAYMENT_PLANS[plan];
+    if (!planConfig) {
+      return res.status(400).json({ error: 'Неизвестный тарифный план' });
+    }
+
+    if (plan === 'free_trial') {
+      return res.status(400).json({ error: 'Пробный период нельзя купить' });
+    }
+
+    // Get user email
+    const user = db.prepare('SELECT email FROM users WHERE id = ?').get(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const paymentId = uuidv4();
+    const amount = planConfig.price;
+
+    // Create payment in YooKassa
+    const auth = Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64');
+
+    const yookassaPayload = {
+      amount: {
+        value: amount.toFixed(2),
+        currency: 'RUB'
+      },
+      capture: true,
+      confirmation: {
+        type: 'redirect',
+        return_url: PAYMENT_RETURN_URL,
+        locale: 'ru_RU'
+      },
+      // Для вывода QR на стороне ЮKassa используем СБП
+      payment_method_data: {
+        type: 'sbp'
+      },
+      description: planConfig.description,
+      metadata: {
+        userId,
+        plan,
+        internalPaymentId: paymentId
+      },
+      receipt: {
+        customer: {
+          email: user.email
+        },
+        items: [{
+          description: planConfig.name,
+          quantity: 1,
+          amount: {
+            value: amount.toFixed(2),
+            currency: 'RUB'
+          },
+          vat_code: 1,
+          payment_subject: 'service',
+          payment_mode: 'full_payment'
+        }]
+      }
+    };
+
+    console.log('💰 Creating payment:', { plan, amount, userId });
+
+    const response = await fetch('https://api.yookassa.ru/v3/payments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${auth}`,
+        'Idempotence-Key': paymentId
+      },
+      body: JSON.stringify(yookassaPayload)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('YooKassa error:', response.status, errorText);
+      return res.status(500).json({ error: 'Ошибка создания платежа' });
+    }
+
+    const paymentResult = await response.json();
+    console.log('✅ Payment created:', paymentResult.id);
+
+    // Save payment to database
+    db.prepare(`
+      INSERT INTO payments (id, user_id, yookassa_id, amount, currency, status, plan, description, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'RUB', 'pending', ?, ?, ?, ?)
+    `).run(paymentId, userId, paymentResult.id, amount, plan, planConfig.description, Date.now(), Date.now());
+
+    res.json({
+      success: true,
+      paymentId: paymentResult.id,
+      confirmationUrl: paymentResult.confirmation.confirmation_url
+    });
+
+  } catch (error) {
+    console.error('Create payment error:', error);
+    res.status(500).json({ error: 'Ошибка создания платежа' });
+  }
+});
+
+// YooKassa webhook
+app.post('/api/payments/webhook', async (req, res) => {
+  try {
+    console.log('📨 Received webhook:', req.body.event);
+
+    const { event, object: payment } = req.body;
+
+    if (event === 'payment.succeeded') {
+      const { userId, plan, internalPaymentId } = payment.metadata || {};
+
+      if (!userId || !plan) {
+        console.error('Missing metadata in payment:', payment.id);
+        return res.json({ status: 'ok' });
+      }
+
+      // Update payment status
+      db.prepare(`
+        UPDATE payments SET status = 'succeeded', updated_at = ? WHERE yookassa_id = ?
+      `).run(Date.now(), payment.id);
+
+      // Create subscription
+      const planConfig = PAYMENT_PLANS[plan];
+      if (!planConfig) {
+        console.error('Unknown plan in webhook:', plan);
+        return res.json({ status: 'ok' });
+      }
+
+      const subscriptionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const now = Date.now();
+      let expiresAt = null;
+
+      if (planConfig.type === 'monthly') {
+        expiresAt = now + (30 * 24 * 60 * 60 * 1000); // 30 days
+      }
+
+      db.prepare(`
+        INSERT INTO subscriptions (
+          id, user_id, plan, status, yookassa_payment_id, started_at, expires_at,
+          auto_renew, lessons_limit, lessons_used, voice_sessions_limit, voice_sessions_used,
+          free_lessons_remaining, created_at, updated_at
+        ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?)
+      `).run(
+        subscriptionId,
+        userId,
+        plan,
+        payment.id,
+        now,
+        expiresAt,
+        planConfig.type === 'monthly' ? 1 : 0,
+        planConfig.lessons,
+        planConfig.voiceSessions,
+        now,
+        now
+      );
+
+      console.log('✅ Subscription created:', subscriptionId, 'for user:', userId);
+    }
+
+    if (event === 'payment.canceled') {
+      db.prepare(`
+        UPDATE payments SET status = 'canceled', updated_at = ? WHERE yookassa_id = ?
+      `).run(Date.now(), payment.id);
+    }
+
+    res.json({ status: 'ok' });
+
+  } catch (error) {
+    console.error('Webhook processing error:', error);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// Verify payment status
+app.get('/api/payments/verify/:paymentId', authenticateToken, async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+    const userId = req.user.userId;
+
+    // Check if we already have this payment as succeeded
+    const existingPayment = db.prepare(`
+      SELECT * FROM payments WHERE yookassa_id = ? AND user_id = ?
+    `).get(paymentId, userId);
+
+    if (existingPayment?.status === 'succeeded') {
+      return res.json({ success: true, status: 'succeeded' });
+    }
+
+    // Check with YooKassa
+    const auth = Buffer.from(`${YOOKASSA_SHOP_ID}:${YOOKASSA_SECRET_KEY}`).toString('base64');
+
+    const response = await fetch(`https://api.yookassa.ru/v3/payments/${paymentId}`, {
+      headers: {
+        'Authorization': `Basic ${auth}`
+      }
+    });
+
+    if (!response.ok) {
+      return res.status(404).json({ error: 'Платеж не найден' });
+    }
+
+    const payment = await response.json();
+
+    if (payment.status === 'succeeded' && existingPayment?.status !== 'succeeded') {
+      // Payment succeeded but we haven't processed it yet - trigger subscription creation
+      const { userId: metaUserId, plan } = payment.metadata || {};
+      
+      if (metaUserId && plan) {
+        // Update payment status
+        db.prepare(`
+          UPDATE payments SET status = 'succeeded', updated_at = ? WHERE yookassa_id = ?
+        `).run(Date.now(), paymentId);
+
+        // Check if subscription already exists
+        const existingSub = db.prepare(`
+          SELECT id FROM subscriptions WHERE yookassa_payment_id = ?
+        `).get(paymentId);
+
+        if (!existingSub) {
+          const planConfig = PAYMENT_PLANS[plan];
+          const subscriptionId = `sub_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+          const now = Date.now();
+          let expiresAt = null;
+
+          if (planConfig?.type === 'monthly') {
+            expiresAt = now + (30 * 24 * 60 * 60 * 1000);
+          }
+
+          db.prepare(`
+            INSERT INTO subscriptions (
+              id, user_id, plan, status, yookassa_payment_id, started_at, expires_at,
+              auto_renew, lessons_limit, lessons_used, voice_sessions_limit, voice_sessions_used,
+              free_lessons_remaining, created_at, updated_at
+            ) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?)
+          `).run(
+            subscriptionId,
+            metaUserId,
+            plan,
+            paymentId,
+            now,
+            expiresAt,
+            planConfig?.type === 'monthly' ? 1 : 0,
+            planConfig?.lessons || 0,
+            planConfig?.voiceSessions || 0,
+            now,
+            now
+          );
+
+          console.log('✅ Subscription created via verify:', subscriptionId);
+        }
+      }
+    }
+
+    res.json({ success: payment.status === 'succeeded', status: payment.status });
+
+  } catch (error) {
+    console.error('Verify payment error:', error);
+    res.status(500).json({ error: 'Ошибка проверки платежа' });
+  }
+});
+
+// Create free trial for user (called after registration)
+app.post('/api/payments/create-trial', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    // Check if user already has any subscription
+    const existingSub = db.prepare(`
+      SELECT id FROM subscriptions WHERE user_id = ? LIMIT 1
+    `).get(userId);
+
+    if (existingSub) {
+      return res.json({ 
+        success: false, 
+        message: 'У вас уже есть подписка',
+        alreadyHasSubscription: true 
+      });
+    }
+
+    const planConfig = PAYMENT_PLANS.free_trial;
+    const subscriptionId = `sub_trial_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const now = Date.now();
+
+    db.prepare(`
+      INSERT INTO subscriptions (
+        id, user_id, plan, status, yookassa_payment_id, started_at, expires_at,
+        auto_renew, lessons_limit, lessons_used, voice_sessions_limit, voice_sessions_used,
+        free_lessons_remaining, created_at, updated_at
+      ) VALUES (?, ?, 'free_trial', 'active', NULL, ?, NULL, 0, ?, 0, ?, 0, ?, ?, ?)
+    `).run(
+      subscriptionId,
+      userId,
+      now,
+      planConfig.lessons,
+      planConfig.voiceSessions,
+      planConfig.lessons,
+      now,
+      now
+    );
+
+    console.log('🎁 Free trial created for user:', userId);
+
+    res.json({ 
+      success: true, 
+      subscriptionId,
+      lessonsRemaining: planConfig.lessons,
+      voiceSessionsRemaining: planConfig.voiceSessions
+    });
+
+  } catch (error) {
+    console.error('Create trial error:', error);
+    res.status(500).json({ error: 'Ошибка создания пробного периода' });
+  }
+});
+
+// Test payment simulation (for development)
+app.post('/api/payments/test-payment', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { plan } = req.body;
+
+    const planConfig = PAYMENT_PLANS[plan];
+    if (!planConfig || plan === 'free_trial') {
+      return res.status(400).json({ error: 'Неверный тарифный план' });
+    }
+
+    const subscriptionId = `sub_test_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const now = Date.now();
+    let expiresAt = null;
+
+    if (planConfig.type === 'monthly') {
+      expiresAt = now + (30 * 24 * 60 * 60 * 1000);
+    }
+
+    // Deactivate any existing subscriptions
+    db.prepare(`
+      UPDATE subscriptions SET status = 'replaced' WHERE user_id = ? AND status = 'active'
+    `).run(userId);
+
+    db.prepare(`
+      INSERT INTO subscriptions (
+        id, user_id, plan, status, yookassa_payment_id, started_at, expires_at,
+        auto_renew, lessons_limit, lessons_used, voice_sessions_limit, voice_sessions_used,
+        free_lessons_remaining, created_at, updated_at
+      ) VALUES (?, ?, ?, 'active', 'test_payment', ?, ?, ?, ?, 0, ?, 0, 0, ?, ?)
+    `).run(
+      subscriptionId,
+      userId,
+      plan,
+      now,
+      expiresAt,
+      planConfig.type === 'monthly' ? 1 : 0,
+      planConfig.lessons,
+      planConfig.voiceSessions,
+      now,
+      now
+    );
+
+    console.log('🧪 Test subscription created:', subscriptionId, 'plan:', plan);
+
+    res.json({ 
+      success: true, 
+      subscriptionId,
+      message: `Тестовая подписка "${planConfig.name}" активирована`
+    });
+
+  } catch (error) {
+    console.error('Test payment error:', error);
+    res.status(500).json({ error: 'Ошибка тестового платежа' });
+  }
+});
+
+// ==================== Performance (Grades) ====================
+
+// Get performance records for a course
+app.get('/api/performance/:courseId', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { courseId } = req.params;
+
+    const items = db.prepare(`
+      SELECT id, topic, grade, created_at
+      FROM course_performance
+      WHERE user_id = ? AND course_id = ?
+      ORDER BY created_at DESC
+    `).all(userId, courseId);
+
+    res.json({ items });
+  } catch (error) {
+    console.error('Get performance error:', error);
+    res.status(500).json({ error: 'Ошибка получения успеваемости' });
+  }
+});
+
+// Add performance record
+app.post('/api/performance/:courseId', authenticateToken, (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { courseId } = req.params;
+    const { topic, grade } = req.body;
+
+    if (!topic || !grade) {
+      return res.status(400).json({ error: 'Тема и оценка обязательны' });
+    }
+
+    const numericGrade = Number(grade);
+    if (isNaN(numericGrade) || numericGrade < 2 || numericGrade > 5) {
+      return res.status(400).json({ error: 'Оценка должна быть от 2 до 5' });
+    }
+
+    const id = uuidv4();
+    const now = Date.now();
+
+    db.prepare(`
+      INSERT INTO course_performance (id, user_id, course_id, topic, grade, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, userId, courseId, topic, numericGrade, now);
+
+    res.status(201).json({ id, topic, grade: numericGrade, created_at: now });
+  } catch (error) {
+    console.error('Add performance error:', error);
+    res.status(500).json({ error: 'Ошибка сохранения успеваемости' });
   }
 });
 

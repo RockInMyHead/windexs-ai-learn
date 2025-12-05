@@ -76,7 +76,7 @@ const CourseStart = () => {
     
     try {
       // Add course to library
-      await addCourse({
+      const result = await addCourse({
         subjectId,
         subjectName: subjectNames[subjectId] || subjectId,
         grade: info?.type === 'grade' ? info.value : undefined,
@@ -85,10 +85,17 @@ const CourseStart = () => {
         icon: subjectIcons[subjectId] || '📚'
       });
 
-      toast({
-        title: "Курс добавлен",
-        description: `${subjectNames[subjectId]} добавлен в вашу библиотеку`,
-      });
+      if (result.isDuplicate) {
+        toast({
+          title: "Курс уже выбран",
+          description: `${subjectNames[subjectId]} уже есть в вашей библиотеке`,
+        });
+      } else {
+        toast({
+          title: "Курс добавлен",
+          description: `${subjectNames[subjectId]} добавлен в вашу библиотеку`,
+        });
+      }
 
       // Navigate to selected mode
       const courseId = `${subjectId}-${selectedOption}`;

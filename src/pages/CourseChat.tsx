@@ -3,7 +3,7 @@ import { Send, Paperclip, X, Image, File, Mic, Square, Volume2, VolumeX, Loader2
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getCourseDisplayName } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
@@ -11,6 +11,9 @@ import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import MathRenderer from "@/components/MathRenderer";
+import { addPerformance } from "@/lib/api";
+
+const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
 
 interface ChatMessage {
   id: string;
@@ -22,6 +25,7 @@ interface ChatMessage {
 
 const CourseChat = () => {
   const { courseId } = useParams();
+  const navigate = useNavigate();
   const { token } = useAuth();
   const { toast } = useToast();
 
@@ -72,7 +76,7 @@ const CourseChat = () => {
   const loadChatHistory = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/history`, {
+      const response = await fetch(`${API_URL}/chat/${courseId}/history`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
@@ -141,14 +145,14 @@ const CourseChat = () => {
         formData.append('messageType', 'voice');
         formData.append('token', token);
 
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`${API_URL}/chat/${courseId}/message`, {
           method: 'POST',
           body: formData,
           signal: abortControllerRef.current.signal
         });
       } else {
         // Handle text message
-        response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+        response = await fetch(`${API_URL}/chat/${courseId}/message`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -203,6 +207,9 @@ const CourseChat = () => {
                         ? { ...m, id: data.messageId, isStreaming: false }
                         : m
                     ));
+                    if (fullContent) {
+                      recordPerformance(fullContent);
+                    }
                   }
 
                   if (data.error) {
@@ -223,6 +230,9 @@ const CourseChat = () => {
             ? { ...m, id: data.messageId, content: data.message, isStreaming: false }
             : m
         ));
+        if (data.message) {
+          recordPerformance(data.message);
+        }
       }
     } catch (error: any) {
       if (error.name === 'AbortError') {
@@ -249,6 +259,24 @@ const CourseChat = () => {
       stopRecording();
     } else {
       startRecording();
+    }
+  };
+
+  const recordPerformance = async (text: string) => {
+    if (!courseId || !token) return;
+    // Extract topic and grade
+    const topicMatch = text.match(/ИТОГ УРОКА[:\-]\s*([^\n;]+)/i);
+    const gradeMatch = text.match(/ОЦЕНКА[:\-]\s*(\d)/i);
+    if (!topicMatch || !gradeMatch) return;
+
+    const grade = Number(gradeMatch[1]);
+    if (isNaN(grade) || grade < 2 || grade > 5) return;
+
+    const topic = topicMatch[1].trim();
+    try {
+      await addPerformance(courseId, { topic, grade });
+    } catch (error) {
+      console.error('Failed to save performance:', error);
     }
   };
 
@@ -305,7 +333,7 @@ const CourseChat = () => {
       formData.append('messageType', 'voice');
       formData.append('token', token || '');
 
-      const response = await fetch(`https://teacher.windexs.ru/api/chat/${courseId}/message`, {
+      const response = await fetch(`${API_URL}/chat/${courseId}/message`, {
         method: 'POST',
         body: formData,
         signal: abortControllerRef.current.signal
@@ -479,7 +507,7 @@ const CourseChat = () => {
     try {
       setSpeakingMessageId(messageId);
 
-      const response = await fetch('https://teacher.windexs.ru/api/tts', {
+      const response = await fetch(`${API_URL}/tts`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -586,10 +614,17 @@ const CourseChat = () => {
       <Navigation />
       <main className="container mx-auto px-4 pt-24 pb-16">
         <div className="max-w-4xl mx-auto h-[calc(100vh-12rem)] flex flex-col">
-          <div className="text-center mb-6 animate-fade-in">
-            <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
-              {getCourseDisplayName(courseId || "")}
-            </h1>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6 animate-fade-in">
+            <div className="text-center md:text-left">
+              <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-emerald-600 bg-clip-text text-transparent">
+                {getCourseDisplayName(courseId || "")}
+              </h1>
+            </div>
+            <div className="flex flex-wrap gap-2 justify-center md:justify-end">
+              <Button variant="outline" size="sm" onClick={() => navigate(`/performance/${courseId}`)}>
+                Успеваемость
+              </Button>
+            </div>
           </div>
 
           <Card className="flex-1 flex flex-col overflow-hidden shadow-xl">

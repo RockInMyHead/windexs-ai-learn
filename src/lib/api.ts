@@ -1,5 +1,177 @@
 const API_URL = import.meta.env.VITE_API_URL || 'https://teacher.windexs.ru/api';
 
+// ==================== Payment Types ====================
+export interface PaymentPlan {
+  id: string;
+  name: string;
+  price: number;
+  lessons: number | null;
+  voiceSessions: number | null;
+  type: string;
+  description: string;
+}
+
+export interface UserSubscription {
+  hasSubscription: boolean;
+  plan: string | null;
+  planName: string | null;
+  lessonsRemaining: number;
+  voiceSessionsRemaining: number;
+  isUnlimited: boolean;
+  expiresAt: number | null;
+  startedAt: number | null;
+}
+
+export interface AccessCheck {
+  hasAccess: boolean;
+  remaining?: number;
+  total?: number;
+  used?: number;
+  isUnlimited?: boolean;
+  reason?: string;
+}
+
+// Performance / grades
+export interface PerformanceRecord {
+  id: string;
+  topic: string;
+  grade: number;
+  created_at: number;
+}
+
+export const getPerformance = async (courseId: string): Promise<PerformanceRecord[]> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/performance/${courseId}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) throw new Error('Ошибка получения успеваемости');
+  const data = await response.json();
+  return data.items || [];
+};
+
+export const addPerformance = async (courseId: string, payload: { topic: string; grade: number }): Promise<PerformanceRecord> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/performance/${courseId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Ошибка сохранения успеваемости');
+  }
+  return response.json();
+};
+
+// ==================== Payment API ====================
+export const getPaymentPlans = async (): Promise<PaymentPlan[]> => {
+  const response = await fetch(`${API_URL}/payments/plans`);
+  if (!response.ok) throw new Error('Ошибка получения тарифов');
+  const data = await response.json();
+  return data.plans;
+};
+
+export const getUserSubscription = async (): Promise<UserSubscription> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/subscription`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) throw new Error('Ошибка получения подписки');
+  return response.json();
+};
+
+export const checkAccess = async (feature: 'lessons' | 'voice'): Promise<AccessCheck> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/access/${feature}`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) throw new Error('Ошибка проверки доступа');
+  return response.json();
+};
+
+export const useLesson = async (): Promise<{ success: boolean; remaining: number }> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/use-lesson`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка списания урока');
+  }
+  return response.json();
+};
+
+export const useVoiceSession = async (): Promise<{ success: boolean; remaining: number }> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/use-voice`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка списания голосовой сессии');
+  }
+  return response.json();
+};
+
+export const createPayment = async (plan: string): Promise<{ success: boolean; paymentId: string; confirmationUrl: string }> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/create`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ plan })
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка создания платежа');
+  }
+  return response.json();
+};
+
+export const createFreeTrial = async (): Promise<{ success: boolean; lessonsRemaining: number; voiceSessionsRemaining: number }> => {
+  const token = getToken();
+  if (!token) throw new Error('Не авторизован');
+
+  const response = await fetch(`${API_URL}/payments/create-trial`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const data = await response.json();
+    throw new Error(data.error || 'Ошибка создания пробного периода');
+  }
+  return response.json();
+};
+
 export interface Course {
   id: string;
   subject_id: string;
@@ -43,7 +215,7 @@ export const addCourse = async (courseData: {
   goal?: string;
   goalName?: string;
   icon?: string;
-}): Promise<Course> => {
+}): Promise<{ course: Course; isDuplicate: boolean }> => {
   const token = getToken();
   if (!token) throw new Error('Не авторизован');
 
@@ -62,7 +234,9 @@ export const addCourse = async (courseData: {
   }
 
   const data = await response.json();
-  return data.course;
+  const isDuplicate = data.message === 'Курс уже добавлен';
+
+  return { course: data.course, isDuplicate };
 };
 
 // Update course progress

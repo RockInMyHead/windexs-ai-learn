@@ -54,6 +54,8 @@ const Library = () => {
         title: "Курс удален",
         description: "Курс был удален из вашей библиотеки",
       });
+      // После удаления перенаправляем к каталогу курсов
+      navigate("/courses");
     } catch (error) {
       toast({
         title: "Ошибка",
@@ -154,6 +156,16 @@ const Library = () => {
                       onClick={() => navigate(`/learning-mode/${course.subject_id}-${course.grade ? `grade-${course.grade}` : `goal-${course.goal}`}`)}
                     >
                       Продолжить обучение
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/performance/${course.id}`);
+                      }}
+                    >
+                      Успеваемость
                     </Button>
                   </CardContent>
                 </Card>

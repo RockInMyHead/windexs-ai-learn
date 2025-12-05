@@ -1,0 +1,68 @@
+{
+  "name": "pay-module",
+  "version": "1.0.0",
+  "description": "Standalone payment integration module with Yookassa support for Node.js applications",
+  "main": "lib/payment-service.js",
+  "scripts": {
+    "test": "node test.js",
+    "test:full": "jest",
+    "test:watch": "jest --watch",
+    "test:integration": "jest --config jest.integration.config.js",
+    "lint": "eslint lib examples --ext .js",
+    "lint:fix": "eslint lib examples --ext .js --fix",
+    "build": "echo 'No build step required'",
+    "start:example": "node examples/express-server.js",
+    "db:migrate": "node -e \"require('./lib/subscription-manager').migrate()\"",
+    "db:seed": "node -e \"require('./examples/seed-database')\"",
+    "setup": "node -e \"console.log('Pay Module setup complete!')\""
+  },
+  "keywords": [
+    "payment",
+    "yookassa",
+    "subscription",
+    "nodejs",
+    "express",
+    "billing",
+    "monetization"
+  ],
+  "author": "Your Company",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourcompany/pay-module.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourcompany/pay-module/issues"
+  },
+  "homepage": "https://github.com/yourcompany/pay-module#readme",
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.57.0",
+    "supertest": "^6.3.4",
+    "sqlite3": "^5.1.6"
+  },
+  "peerDependencies": {
+    "express": "^4.18.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "files": [
+    "lib/",
+    "database/",
+    "config/",
+    "docs/",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./payment-service": "./lib/payment-service.js",
+    "./subscription-manager": "./lib/subscription-manager.js",
+    "./yookassa-client": "./lib/yookassa-client.js",
+    "./config": "./config/example.js"
+  }
+}
